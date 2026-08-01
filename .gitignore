@@ -1,0 +1,11 @@
+node_modules/*
+package-lock.json
+dist/*
+
+*.local
+logs
+*.log
+.env
+.env2
+*.exe
+.claude
