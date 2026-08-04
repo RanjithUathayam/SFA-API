@@ -158,7 +158,7 @@ function mapToPriceListPayload(sqlRows) {
                 BPProductName: row.BPProductName     ?? productCode,
                 PriceLisCode : row.PriceListCode     ?? null,
                 EffectiveFrom: row.EffectiveFrom     ?? new Date().toISOString().slice(0, 19),
-                EffectiveTo  : row.EffectiveTo       ?? '2055-12-31T00:00:00',
+                EffectiveTo  : row.EffectiveTo       ?? '2060-12-31T00:00:00',
                 IsActive     : row.PriceListIsActive ?? 1,
                 Prices       : []
             });
