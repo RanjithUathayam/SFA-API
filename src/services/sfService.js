@@ -252,7 +252,6 @@ async function upsertPriceLists(priceLists) {
     }
 
     const token = await getSalesforceToken();
-    console.log(process.env.SF_API_URL_PriceList)
     let url = process.env.SF_API_URL_PriceList ||
         process.env.SF_API_URL_ProductMaster?.replace('ProductUpsertAPI', 'PriceListUpsertAPI');
     url = buildSalesforceUrl(url, instanceUrl);
@@ -415,11 +414,8 @@ async function upsertSchemes(schemes) {
 
     const token = await getSalesforceToken();
 
-    let url = process.env.SF_API_URL_Scheme;
-    if (!url && process.env.SF_API_URL_ProductMaster) {
-        url = process.env.SF_API_URL_ProductMaster.replace('ProductUpsertAPI', 'SchemeService');
-        log.info(`Derived Scheme URL: ${url}`);
-    }
+    let url = process.env.SF_API_URL_Scheme 
+   
     url = buildSalesforceUrl(url, instanceUrl);
 
     if (!url) throw new Error('SF_API_URL_Scheme is not set in .env');
@@ -444,7 +440,7 @@ async function upsertSchemes(schemes) {
         const policyId  = scheme?.Policy?.PolicyID     ?? 'UNKNOWN';
 
         try {
-           
+           console.log("*************url", url)
             const response = await withRetry(
                 () => axios.post(url, scheme, { headers, timeout: REQ_TIMEOUT }),
                 policyNum

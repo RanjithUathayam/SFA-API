@@ -505,7 +505,7 @@ function startCronJobs() {
     }
     // ── Job registration ─────────────────────────────────────────────────────
     log.info('Registering daily cron jobs…');
- 
+
     scheduleCron('0 */5 * * *', 'Stock Inventory Sync (every 5 hours)',
         async () => { await runStockInventoryApiSync(); }
     );

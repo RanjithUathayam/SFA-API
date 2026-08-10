@@ -140,12 +140,12 @@ exports.syncPriceLists = async (req, res) => {
         payload.slice(0, 3).forEach((p, i) =>
             log.info(`  [${i + 1}] ${p.ProductCode} → ${p.PriceList?.length ?? 0} pricelist(s)`)
         );
-        console.log("*********payload", JSON.stringify(payload))
+      
         const sfResult = await sfService.upsertPriceLists(payload);
         divider('PRICELIST SYNC COMPLETE');
         log.ok(`Elapsed : ${elapsed(startTime)}`);
         divider();
-
+        
         return res.status(200).json({
             message       : sfResult.failedBatches === 0
                 ? 'PriceList Sync Completed Successfully'
@@ -256,7 +256,7 @@ exports.syncSchemes = async (req, res) => {
                 `BP: ${s.Policy.SC_BpInclution[0]?.BPCode ?? 'n/a'}`
             )
         );
-
+        console.log("************", JSON.stringify(payload))
         const sfResult = await sfService.upsertSchemes(payload);
 
         divider('SCHEME SYNC COMPLETE');
