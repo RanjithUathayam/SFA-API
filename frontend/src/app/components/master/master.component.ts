@@ -5,6 +5,7 @@ import { ActivatedRoute } from '@angular/router';
 import { Subject } from 'rxjs';
 import { debounceTime, takeUntil } from 'rxjs/operators';
 import { ApiService } from '../../services/api.service';
+import { GroupFilterComponent } from '../group-filter/group-filter.component';
 
 export interface ColumnDef {
   key: string;
@@ -20,6 +21,7 @@ export interface MasterConfig {
   icon: string;
   recordKeyField: string;
   columns: ColumnDef[];
+  hasProductGroupFilter?: boolean;
 }
 
 function fmtNum(v: any): string {
@@ -30,11 +32,12 @@ function fmtNum(v: any): string {
 export const MASTER_CONFIG: Record<string, MasterConfig> = {
   pricelists: {
     title: 'Price Lists', desc: 'View price records per product, track push status, sync to Salesforce.',
-    icon: '💰', recordKeyField: 'ProductCode',
+    icon: '💰', recordKeyField: 'ProductCode', hasProductGroupFilter: true,
     columns: [
-      { key: 'ProductCode', label: 'Product Code', cls: 'mono' },
-      { key: 'ProductName', label: 'Product Name' },
-      { key: 'Brand',       label: 'Brand' },
+      { key: 'ProductCode',      label: 'Product Code', cls: 'mono' },
+      { key: 'ProductName',      label: 'Product Name' },
+      { key: 'Brand',            label: 'Brand' },
+      { key: 'ProductGroupCode', label: 'Product Group' },
       { key: 'PriceEntries',label: 'Entries', align: 'right' },
       { key: 'StateCount',  label: 'States',  align: 'right' },
       { key: 'MinPrice',    label: 'Min Price', align: 'right', fmt: fmtNum },
@@ -103,7 +106,7 @@ interface PushResult {
 
 @Component({
   selector: 'app-master',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, GroupFilterComponent],
   templateUrl: './master.component.html',
   styleUrl: './master.component.scss',
 })
@@ -121,6 +124,8 @@ export class MasterComponent implements OnInit, OnDestroy {
 
   searchInput = '';
   statusFilter = '';
+  productGroupFilter = '';
+  productGroups: string[] = [];
 
   selectedKeys = new Set<string>();
   pushingKeys  = new Set<string>();
@@ -143,6 +148,7 @@ export class MasterComponent implements OnInit, OnDestroy {
       this.cfg = MASTER_CONFIG[type] || MASTER_CONFIG['pricelists'];
       this.resetState();
       this.loadPage(1);
+      if (this.cfg.hasProductGroupFilter) this.loadProductGroups();
     });
 
     this.searchSubject.pipe(debounceTime(400), takeUntil(this.destroy$)).subscribe(() => {
@@ -159,10 +165,22 @@ export class MasterComponent implements OnInit, OnDestroy {
 
   private resetState() {
     this.records = []; this.summary = {}; this.totalRecords = 0; this.totalPages = 1;
-    this.currentPage = 1; this.searchInput = ''; this.statusFilter = '';
+    this.currentPage = 1; this.searchInput = ''; this.statusFilter = ''; this.productGroupFilter = '';
     this.selectedKeys.clear(); this.pushingKeys.clear();
     this.showResultPanel = false; this.resultPanel = null;
     clearTimeout(this.pollTimer);
+  }
+
+  loadProductGroups() {
+    this.api.getProductGroups().subscribe({
+      next: (json) => { if (json.success) this.productGroups = json.data; },
+      error: () => { /* dropdown just stays empty if this fails */ },
+    });
+  }
+
+  onProductGroupChange(group: string) {
+    this.productGroupFilter = group;
+    this.loadPage(1);
   }
 
   loadPage(page: number) {
@@ -171,8 +189,9 @@ export class MasterComponent implements OnInit, OnDestroy {
     clearTimeout(this.pollTimer);
 
     const params: Record<string, any> = { page: this.currentPage, limit: this.pageLimit };
-    if (this.searchInput)  params['search']     = this.searchInput;
-    if (this.statusFilter) params['pushStatus'] = this.statusFilter;
+    if (this.searchInput)        params['search']       = this.searchInput;
+    if (this.statusFilter)       params['pushStatus']    = this.statusFilter;
+    if (this.productGroupFilter) params['productGroup']  = this.productGroupFilter;
 
     this.api.getMasterList(this.masterType, params).subscribe({
       next: (data) => {
@@ -282,8 +301,9 @@ export class MasterComponent implements OnInit, OnDestroy {
     if (!confirm(`Push ALL ${this.cfg.title} matching the current filter?\n\nThis runs in the background.`)) return;
     this.loading = true;
     const body: Record<string, any> = {};
-    if (this.searchInput)  body['search']     = this.searchInput;
-    if (this.statusFilter) body['pushStatus'] = this.statusFilter;
+    if (this.searchInput)        body['search']       = this.searchInput;
+    if (this.statusFilter)       body['pushStatus']    = this.statusFilter;
+    if (this.productGroupFilter) body['productGroup']  = this.productGroupFilter;
 
     this.api.pushAllMaster(this.masterType, body).subscribe({
       next: (data) => {

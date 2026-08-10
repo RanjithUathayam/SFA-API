@@ -1,0 +1,26 @@
+<div class="gf-wrap">
+  <input
+    type="text"
+    class="gf-input"
+    [value]="isOpen ? searchText : value"
+    [placeholder]="placeholder"
+    (focus)="onFocus()"
+    (input)="onInput($event)"
+  />
+  @if (value && !isOpen) {
+    <button type="button" class="gf-clear" (click)="clear($event)">&#10005;</button>
+  }
+  <span class="gf-caret">&#9662;</span>
+
+  @if (isOpen) {
+    <div class="gf-panel">
+      <div class="gf-option" [class.active]="!value" (click)="select('')">{{ placeholder }}</div>
+      @for (opt of filteredOptions(); track opt) {
+        <div class="gf-option" [class.active]="opt === value" (click)="select(opt)">{{ opt }}</div>
+      }
+      @if (filteredOptions().length === 0) {
+        <div class="gf-empty">No matches</div>
+      }
+    </div>
+  }
+</div>

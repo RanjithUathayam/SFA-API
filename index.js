@@ -81,6 +81,7 @@ app.post('/api/push/bulk',        pushController.pushBulk);
 
 // ── Product Master routes ──────────────────────────────────────────────────
 app.get ('/api/products',          productController.getProducts);
+app.get ('/api/products/groups',   productController.getProductGroups);
 app.post('/api/products/push',     productController.pushProducts);
 app.post('/api/products/push-all', productController.pushAllProducts);
 

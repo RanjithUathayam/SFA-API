@@ -4,12 +4,14 @@ import { FormsModule } from '@angular/forms';
 import { Subject } from 'rxjs';
 import { debounceTime, takeUntil } from 'rxjs/operators';
 import { ApiService } from '../../services/api.service';
+import { GroupFilterComponent } from '../group-filter/group-filter.component';
 
 interface Product {
   ProductCode: string;
   ProductName: string;
   Brand?: string;
   DivisionCode?: string;
+  ProductGroupCode?: string;
   CategoryName?: string;
   StyleCode?: string;
   SizeCode?: string;
@@ -38,7 +40,7 @@ interface PushResult {
 
 @Component({
   selector: 'app-products',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, GroupFilterComponent],
   templateUrl: './products.component.html',
   styleUrl: './products.component.scss',
 })
@@ -56,6 +58,8 @@ export class ProductsComponent implements OnInit, OnDestroy, AfterViewChecked {
   searchInput = '';
   pushStatusFilter = '';
   divisionFilter = '';
+  productGroupFilter = '';
+  productGroups: string[] = [];
 
   selectedCodes = new Set<string>();
   pushingCodes = new Set<string>();
@@ -81,6 +85,14 @@ export class ProductsComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.loadProducts(true);
       });
     this.loadProducts(true);
+    this.loadProductGroups();
+  }
+
+  loadProductGroups() {
+    this.api.getProductGroups().subscribe({
+      next: (json) => { if (json.success) this.productGroups = json.data; },
+      error: () => { /* dropdown just stays empty if this fails */ },
+    });
   }
 
   ngAfterViewChecked() {
@@ -105,9 +117,10 @@ export class ProductsComponent implements OnInit, OnDestroy, AfterViewChecked {
     clearTimeout(this.pollTimer);
 
     const params: Record<string, any> = { page: this.currentPage, limit: this.pageSize };
-    if (this.searchInput)      params['search']     = this.searchInput;
-    if (this.pushStatusFilter) params['pushStatus'] = this.pushStatusFilter;
-    if (this.divisionFilter)   params['division']   = this.divisionFilter;
+    if (this.searchInput)        params['search']       = this.searchInput;
+    if (this.pushStatusFilter)   params['pushStatus']    = this.pushStatusFilter;
+    if (this.divisionFilter)     params['division']      = this.divisionFilter;
+    if (this.productGroupFilter) params['productGroup']  = this.productGroupFilter;
 
     this.api.getProducts(params).subscribe({
       next: (json) => {
@@ -146,6 +159,12 @@ export class ProductsComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   onDivisionChange() {
+    this.currentPage = 1;
+    this.loadProducts(true);
+  }
+
+  onProductGroupChange(group: string) {
+    this.productGroupFilter = group;
     this.currentPage = 1;
     this.loadProducts(true);
   }
@@ -223,9 +242,10 @@ export class ProductsComponent implements OnInit, OnDestroy, AfterViewChecked {
   triggerPushAll() {
     if (!confirm('Push ALL products matching the current filter?\n\nThis runs in the background.')) return;
     const filters: Record<string, any> = {};
-    if (this.searchInput)      filters['search']     = this.searchInput;
-    if (this.pushStatusFilter) filters['pushStatus'] = this.pushStatusFilter;
-    if (this.divisionFilter)   filters['division']   = this.divisionFilter;
+    if (this.searchInput)        filters['search']       = this.searchInput;
+    if (this.pushStatusFilter)   filters['pushStatus']    = this.pushStatusFilter;
+    if (this.divisionFilter)     filters['division']      = this.divisionFilter;
+    if (this.productGroupFilter) filters['productGroup']  = this.productGroupFilter;
 
     this.loading = true;
     this.api.pushAllProducts(filters).subscribe({

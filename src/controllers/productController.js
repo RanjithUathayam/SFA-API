@@ -12,16 +12,31 @@ exports.getProducts = async (req, res) => {
         // Ensure [BBLive].[dbo].[SFA_RecordPushStatus] exists before the LEFT JOIN query runs
         await recordPushSvc.ensureTable();
 
-        const page       = Math.max(1, parseInt(req.query.page,  10) || 1);
-        const limit      = Math.min(200, Math.max(10, parseInt(req.query.limit, 10) || 50));
-        const search     = req.query.search     || null;
-        const pushStatus = req.query.pushStatus || null;
-        const division   = req.query.division   || null;
+        const page         = Math.max(1, parseInt(req.query.page,  10) || 1);
+        const limit        = Math.min(200, Math.max(10, parseInt(req.query.limit, 10) || 50));
+        const search       = req.query.search       || null;
+        const pushStatus   = req.query.pushStatus   || null;
+        const division     = req.query.division     || null;
+        const productGroup = req.query.productGroup || null;
 
-        const result = await dbService.getProductsPaged({ page, limit, search, pushStatus, division });
+        const result = await dbService.getProductsPaged({ page, limit, search, pushStatus, division, productGroup });
         return res.status(200).json({ success: true, ...result });
     } catch (err) {
         console.error('[productController] getProducts error:', err.message);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/products/groups
+// Returns distinct Product Group (U_SubGrp7) values for the filter dropdown.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getProductGroups = async (req, res) => {
+    try {
+        const groups = await dbService.getProductGroups();
+        return res.status(200).json({ success: true, data: groups });
+    } catch (err) {
+        console.error('[productController] getProductGroups error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 };
@@ -113,7 +128,7 @@ exports.pushProducts = async (req, res) => {
 // Async background — immediately returns; pushes all pages in background.
 // ─────────────────────────────────────────────────────────────────────────────
 exports.pushAllProducts = async (req, res) => {
-    const { search, pushStatus, division } = req.body;
+    const { search, pushStatus, division, productGroup } = req.body;
 
     // Return immediately; background job handles the rest
     res.status(200).json({
@@ -129,7 +144,7 @@ exports.pushAllProducts = async (req, res) => {
 
         while ((page - 1) * PAGE < total) {
             try {
-                const result = await dbService.getProductsPaged({ page, limit: PAGE, search, pushStatus, division });
+                const result = await dbService.getProductsPaged({ page, limit: PAGE, search, pushStatus, division, productGroup });
                 total = result.total;
 
                 if (!result.data.length) break;

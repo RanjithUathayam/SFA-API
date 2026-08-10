@@ -10,6 +10,10 @@ export class ApiService {
     return this.http.get('/api/products', { params: this.toHttpParams(params) });
   }
 
+  getProductGroups(): Observable<any> {
+    return this.http.get('/api/products/groups');
+  }
+
   pushProducts(productCodes: string[]): Observable<any> {
     return this.http.post('/api/products/push', { productCodes });
   }

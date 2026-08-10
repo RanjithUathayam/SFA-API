@@ -1201,13 +1201,14 @@ async function getOutstandingData() {
 // opts: { page, limit, search, pushStatus, division }
 // Returns: { data, total, page, limit, totalPages, summary }
 // ─────────────────────────────────────────────────────────────────────────────
-async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, division } = {}) {
+async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, division, productGroup } = {}) {
     const pool   = await getPool();
     const offset = (page - 1) * limit;
 
-    const searchVal   = search     ? `%${search}%` : null;
-    const divVal      = division   || null;
-    const statusVal   = pushStatus || null;
+    const searchVal   = search       ? `%${search}%` : null;
+    const divVal      = division     || null;
+    const statusVal   = pushStatus   || null;
+    const groupVal    = productGroup || null;
 
     const dataQuery = `
         SELECT
@@ -1215,6 +1216,7 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
             t0.ItemCode                                                     AS ProductCode,
             t0.ItemName                                                     AS ProductName,
             CASE WHEN t0.validFor = 'Y' THEN 1 ELSE 0 END                  AS ProductIsActive,
+            t0.U_SubGrp7                                                    AS ProductGroupCode,
             t0.U_SubGrp1                                                    AS Brand,
             t0.U_SubGrp3                                                    AS CategoryName,
             t0.U_SubGrp4                                                    AS StyleCode,
@@ -1254,6 +1256,7 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
                 (@division = 'ARISER'   AND t0.U_SubGrp1 LIKE '%ARISER%'  ) OR
                 (@division = 'UATHAYAM' AND t0.U_SubGrp1 LIKE '%UATHAYAM%')
         ))
+        AND (@productGroup IS NULL OR t0.U_SubGrp7 = @productGroup)
         AND (@pushStatus IS NULL OR ISNULL(ps.PushStatus, 'Pending') = @pushStatus)
         ORDER BY t0.ItemCode
         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
@@ -1282,11 +1285,12 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
 
     const [dataRes, summaryRes] = await Promise.all([
         pool.request()
-            .input('search',     sql.NVarChar(200), searchVal)
-            .input('division',   sql.NVarChar(50),  divVal)
-            .input('pushStatus', sql.NVarChar(20),  statusVal)
-            .input('offset',     sql.Int,           offset)
-            .input('limit',      sql.Int,           limit)
+            .input('search',       sql.NVarChar(200), searchVal)
+            .input('division',     sql.NVarChar(50),  divVal)
+            .input('productGroup', sql.NVarChar(50),  groupVal)
+            .input('pushStatus',   sql.NVarChar(20),  statusVal)
+            .input('offset',       sql.Int,           offset)
+            .input('limit',        sql.Int,           limit)
             .query(dataQuery),
         pool.request().query(summaryQuery)
     ]);
@@ -1310,6 +1314,31 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
         totalPages: Math.ceil(total / limit),
         summary:    summaryMap,
     };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Distinct Product Group values (U_SubGrp7) — used to populate the Product
+// Group filter dropdown on the Product Master and Price List screens.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getProductGroups() {
+    const pool = await getPool();
+
+    const result = await pool.request().query(`
+        SELECT DISTINCT RTRIM(t0.U_SubGrp7) AS ProductGroupCode
+        FROM [BBLive].[dbo].oitm t0
+        WHERE t0.validFor = 'Y'
+          AND t0.U_SubGrp7 IS NOT NULL
+          AND RTRIM(t0.U_SubGrp7) <> ''
+          AND t0.U_SubGrp1 NOT IN (
+              'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+              'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+              'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
+              'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
+          )
+        ORDER BY ProductGroupCode
+    `);
+
+    return result.recordset.map(r => r.ProductGroupCode);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1369,11 +1398,12 @@ async function getProductDataByCodes(productCodes) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PRICE LISTS — paged list + full data by codes
 // ─────────────────────────────────────────────────────────────────────────────
-async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus } = {}) {
+async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus, productGroup } = {}) {
     const pool       = await getPool();
     const offset     = (page - 1) * limit;
-    const searchVal  = search     ? `%${search}%` : null;
-    const statusVal  = pushStatus || null;
+    const searchVal  = search       ? `%${search}%` : null;
+    const statusVal  = pushStatus   || null;
+    const groupVal   = productGroup || null;
 
     const EXCLUDED_BRANDS = `'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
         'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
@@ -1386,6 +1416,7 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus } =
                 t0.ItemCode  AS ProductCode,
                 t0.ItemName  AS ProductName,
                 B.U_Brand    AS Brand,
+                t0.U_SubGrp7 AS ProductGroupCode,
                 COUNT(*)                  AS PriceEntries,
                 COUNT(DISTINCT B.U_State) AS StateCount,
                 MIN(B.U_SelPrice)         AS MinPrice,
@@ -1399,11 +1430,11 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus } =
                 INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T0.DocEntry = T2.DocEntry
             ) B ON B.U_ItemCode = t0.ItemCode
             WHERE B.U_SelPrice > 0 AND B.U_Brand NOT IN (${EXCLUDED_BRANDS})
-            GROUP BY t0.ItemCode, t0.ItemName, B.U_Brand
+            GROUP BY t0.ItemCode, t0.ItemName, B.U_Brand, t0.U_SubGrp7
         )
         SELECT
             COUNT(*) OVER()                        AS TotalCount,
-            ps.ProductCode, ps.ProductName, ps.Brand,
+            ps.ProductCode, ps.ProductName, ps.Brand, ps.ProductGroupCode,
             ps.PriceEntries, ps.StateCount, ps.MinPrice, ps.MaxPrice,
             ISNULL(rp.PushStatus, 'Pending')       AS PushStatus,
             rp.LastPushedAt,
@@ -1412,6 +1443,7 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus } =
         LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
             ON rp.MasterType = 'pricelists' AND rp.RecordKey = ps.ProductCode
         WHERE (@search IS NULL OR ps.ProductCode LIKE @search OR ps.ProductName LIKE @search OR ps.Brand LIKE @search)
+          AND (@productGroup IS NULL OR ps.ProductGroupCode = @productGroup)
           AND (@pushStatus IS NULL OR ISNULL(rp.PushStatus, 'Pending') = @pushStatus)
         ORDER BY ps.ProductCode
         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
@@ -1437,10 +1469,11 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus } =
 
     const [dataRes, summaryRes] = await Promise.all([
         pool.request()
-            .input('search',     sql.NVarChar(200), searchVal)
-            .input('pushStatus', sql.NVarChar(20),  statusVal)
-            .input('offset',     sql.Int,           offset)
-            .input('limit',      sql.Int,           limit)
+            .input('search',       sql.NVarChar(200), searchVal)
+            .input('productGroup', sql.NVarChar(50),  groupVal)
+            .input('pushStatus',   sql.NVarChar(20),  statusVal)
+            .input('offset',       sql.Int,           offset)
+            .input('limit',        sql.Int,           limit)
             .query(dataQuery),
         pool.request().query(summaryQuery),
     ]);
@@ -2314,6 +2347,7 @@ async function upsertEhrTriggerLog(jobKey, punchType, triggeredAt, status, compl
 module.exports = {
     getProductData,
     getProductsPaged,
+    getProductGroups,
     getProductDataByCodes,
     getPriceListData,
     getPriceListsPaged,

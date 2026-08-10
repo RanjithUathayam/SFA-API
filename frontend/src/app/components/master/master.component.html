@@ -27,6 +27,14 @@
 <!-- Toolbar -->
 <div class="toolbar">
   <input type="text" [(ngModel)]="searchInput" (input)="onSearchInput()" placeholder="Search…" />
+  @if (cfg.hasProductGroupFilter) {
+    <app-group-filter
+      [options]="productGroups"
+      [value]="productGroupFilter"
+      placeholder="All Product Groups"
+      (valueChange)="onProductGroupChange($event)">
+    </app-group-filter>
+  }
   <select [(ngModel)]="pageLimit" (change)="onPageLimitChange()">
     <option [ngValue]="25">25 / page</option>
     <option [ngValue]="50">50 / page</option>

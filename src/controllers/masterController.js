@@ -121,12 +121,13 @@ exports.getMasterList = async (req, res) => {
     try {
         await recordPushSvc.ensureTable();
 
-        const page       = Math.max(1, parseInt(req.query.page,  10) || 1);
-        const limit      = Math.min(200, Math.max(10, parseInt(req.query.limit, 10) || 50));
-        const search     = req.query.search     || null;
-        const pushStatus = req.query.pushStatus || null;
+        const page         = Math.max(1, parseInt(req.query.page,  10) || 1);
+        const limit        = Math.min(200, Math.max(10, parseInt(req.query.limit, 10) || 50));
+        const search       = req.query.search       || null;
+        const pushStatus   = req.query.pushStatus   || null;
+        const productGroup = req.query.productGroup || null;
 
-        const result = await cfg.fetchPaged({ page, limit, search, pushStatus });
+        const result = await cfg.fetchPaged({ page, limit, search, pushStatus, productGroup });
         return res.status(200).json({ success: true, ...result });
     } catch (err) {
         console.error(`[masterController] getMasterList (${req.params.masterType}) error:`, err.message);
@@ -201,7 +202,7 @@ exports.pushAllMasterRecords = async (req, res) => {
     const cfg = MASTERS[req.params.masterType];
     if (!cfg) return res.status(404).json({ success: false, error: 'Unknown master type' });
 
-    const { search, pushStatus } = req.body;
+    const { search, pushStatus, productGroup } = req.body;
 
     res.status(200).json({
         success: true,
@@ -215,7 +216,7 @@ exports.pushAllMasterRecords = async (req, res) => {
 
         while ((page - 1) * PAGE < total) {
             try {
-                const result = await cfg.fetchPaged({ page, limit: PAGE, search, pushStatus });
+                const result = await cfg.fetchPaged({ page, limit: PAGE, search, pushStatus, productGroup });
                 total = result.total;
                 if (!result.data.length) break;
 
