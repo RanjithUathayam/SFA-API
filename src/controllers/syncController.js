@@ -140,7 +140,7 @@ exports.syncPriceLists = async (req, res) => {
         payload.slice(0, 3).forEach((p, i) =>
             log.info(`  [${i + 1}] ${p.ProductCode} → ${p.PriceList?.length ?? 0} pricelist(s)`)
         );
-      
+        
         const sfResult = await sfService.upsertPriceLists(payload);
         divider('PRICELIST SYNC COMPLETE');
         log.ok(`Elapsed : ${elapsed(startTime)}`);

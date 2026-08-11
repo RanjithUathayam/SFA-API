@@ -244,7 +244,7 @@ function mapToSchemePayload(rows) {
             policyMap.set(policyId, {
                 Policy: {
                     PolicyNumber               : row.PolicyNumber,
-                    Revision                   : row.Revision,
+                    Revision                   : row.Revision + 1,
                     PolicyID                   : row.PolicyID,
                     PolicyName                 : row.PolicyName,
                     SavingType                 : row.SavingType,
@@ -259,7 +259,7 @@ function mapToSchemePayload(rows) {
                     DiscountPer                : row.DiscountPer,
                     SC_BpCategoryMapping       : JSON.parse(row.SC_BpCategoryMapping),
                     StateMapping               : JSON.parse(row.StateMapping),
-                    RoleMapping                : [{ "Role": "RBM" }],
+                    RoleMapping                : [{ "Role": "RBM" },{ "Role": "SE" }],
                     SC_BpExclution             : JSON.parse(row.SC_BpExclution),
                     SC_BpInclution             : [{ "BPCode": null }],
                     SC_ProductMapping          : JSON.parse(row.SC_ProductMapping),

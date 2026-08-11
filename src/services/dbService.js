@@ -161,7 +161,22 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
                     'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
                     'EVERYDAY RDY'
                 ) 
-               -- AND t0.U_SubGrp7 in ('ZEN')
+                AND t0.U_SubGrp7 IN (
+                    'RN TSHIRT',
+                    'GOLF POLO T SHIRT',
+                    'SPORT RN TSHIRT',
+                    'WAFFLE POLO T SHIRT',
+                    'FRENCH POLO T SHIRT',
+                    'TENNIS POLO T SHIRT',
+                    'CANTON POLO T SHIRT',
+                    'LYCRA POLO T SHIRT',
+                    'CLARK POLO T SHIRT',
+                    'KENT POLO T SHIRT',
+                    'MACRO POLO T SHIRT',
+                    'FASHION POLO T SHIRT',
+                    'CRIPE POLO T SHIRT',
+                    'ZULU POLO T SHIRT'
+                )
                 ORDER BY t0.ItemCode
         OFFSET @offset ROWS
         FETCH NEXT @limit ROWS ONLY`
@@ -180,161 +195,166 @@ async function getPriceListData() {
         const pool = await getPool();
 
         const query = `
-            WITH itempriced
-                AS (SELECT T1.u_itemcode,
-                            T0.docentry,
-                            T2.u_brand,
-                            T0.u_state,
-                            T0.u_selprice,
-                            T0.u_mrp,
-                            T2.u_lock,
-                            T0.lineid,
-                            T2.u_catalgcode
-                    FROM   [BBLive].[dbo].[@ins_plm2] T0
-                            INNER JOIN [BBLive].[dbo].[@ins_oplm] T1
-                                    ON T0.docentry = T1.docentry
-                            INNER JOIN [BBLive].[dbo].[@ins_plm1] T2
-                                    ON T0.docentry = T2.docentry
-                                    AND T2.lineid = T0.u_rowid
-                    WHERE  T2.u_lock = 'N'
-                            AND T0.u_mrp > 0),
-                sizepriced
-                AS (SELECT T1b.u_subgroup1,
-                            T1b.u_subgroup7,
-                            T1b.u_subgroup4,
-                            T3b.u_size,
-                            T0b.docentry,
-                            T2b.u_code                AS U_Brand,
-                            Cast(NULL AS VARCHAR(50)) AS U_State,
-                            T3b.u_selprice,
-                            T3b.u_mrp,
-                            'N'                       AS U_Lock,
-                            T1b.lineid,
-                            Cast(NULL AS VARCHAR(50)) AS U_CatalgCode
-                    FROM   [BBLive].[dbo].[@ins_oplsn] T0b WITH (nolock)
-                            INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b WITH (nolock)
-                                    ON T0b.docentry = T1b.docentry
-                            INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b WITH (nolock)
-                                    ON T0b.docentry = T3b.docentry
-                                    AND T1b.lineid = T3b.u_uniqid
-                            INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b WITH (nolock)
-                                    ON T0b.docentry = T2b.docentry
-                                    AND T2b.u_selected = 'Y'
-                    WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                        --    AND T1b.u_subgroup7 in ('ZEN')
-                            AND T3b.u_mrp > 0),
-                combined
-                AS (
+            WITH 
+                itempriced AS (
+                    SELECT 
+                    T1.u_itemcode, 
+                    T0.docentry, 
+                    T2.u_brand, 
+                    T0.u_state, 
+                    T0.u_selprice, 
+                    T0.u_mrp, 
+                    T2.u_lock, 
+                    T0.lineid, 
+                    T2.u_catalgcode 
+                    FROM 
+                    [BBLive].[dbo].[@ins_plm2] T0 
+                    INNER JOIN [BBLive].[dbo].[@ins_oplm] T1 ON T0.docentry = T1.docentry 
+                    INNER JOIN [BBLive].[dbo].[@ins_plm1] T2 ON T0.docentry = T2.docentry 
+                    AND T2.lineid = T0.u_rowid 
+                    WHERE 
+                    T2.u_lock = 'N' 
+                    AND T0.u_mrp > 0
+                ), 
+                sizepriced AS (
+                    SELECT 
+                    T1b.u_subgroup1, 
+                    T1b.u_subgroup7, 
+                    T1b.u_subgroup4, 
+                    T3b.u_size, 
+                    T0b.docentry, 
+                    T1b.U_SubGroup1 AS U_Brand, 
+                    Cast(
+                        T2b.u_code AS VARCHAR(50)
+                    ) AS U_State, 
+                    T3b.u_selprice, 
+                    T3b.u_mrp, 
+                    'N' AS U_Lock, 
+                    T1b.lineid, 
+                    Cast(
+                        NULL AS VARCHAR(50)
+                    ) AS U_CatalgCode 
+                    FROM 
+                    [BBLive].[dbo].[@ins_oplsn] T0b 
+                    WITH 
+                    (nolock) 
+                    INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b 
+                    WITH 
+                    (nolock) ON T0b.docentry = T1b.docentry 
+                    INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b 
+                    WITH 
+                    (nolock) ON T0b.docentry = T3b.docentry 
+                    AND T1b.lineid = T3b.u_uniqid 
+                    INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b 
+                    WITH 
+                    (nolock) ON T0b.docentry = T2b.docentry 
+                    AND T2b.u_selected = 'Y' 
+                    WHERE 
+                    Getdate() BETWEEN T0b.u_validfrom 
+                    AND T0b.u_validto 
+                    AND T1b.u_subgroup7 in ('MOTO') 
+                    AND T3b.u_mrp > 0
+                ), 
+                combined AS (
                     -- Source 1: SizePriced from [@INS_OPLSN] (NEW - preferred) -> priority 1
-                    SELECT t0.itemcode  AS ProductCode,
-                        B.docentry   AS PriceListID,
-                        B.u_brand    AS SubBrandCode,
-                        CASE
-                            WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
-                            ELSE t0.itemname
-                        END          AS BPProductName,
-                        B.u_state    AS PriceListCode,
-                        NULL         AS EffectiveFrom,
-                        NULL         AS EffectiveTo,
-                        CASE
-                            WHEN B.u_lock = 'Y' THEN 0
-                            ELSE 1
-                        END          AS PriceListIsActive,
-                        'Dealer'     AS BPCategory,
-                        B.u_selprice AS Price,
-                        B.u_mrp      AS MRP,
-                        B.lineid     AS PriceID,
-                        CASE
-                            WHEN B.u_lock = 'Y' THEN 0
-                            ELSE 1
-                        END          AS PriceIsActive,
-                        1            AS SourcePriority
-                    FROM   [BBLive].[dbo].oitm t0
-                        INNER JOIN sizepriced B
-                                ON B.u_subgroup7 = t0.u_subgrp7
-                                    AND B.u_subgroup4 = t0.u_subgrp4
-                                    AND B.u_subgroup1 = t0.u_subgrp1
-                                    AND B.u_size = t0.u_subgrp5
-                    WHERE  B.u_selprice > 0
-                        AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
-                                                'SAMPLE'
-                                                ,
-                                                'PRINTING & STATIONERY',
-                                                'IMPERIAL COMPUTERS',
-                                                    'PACKING MATERIAL',
-                                                'REPAIRS & MAINTENANCE',
-                                                'SALES PROMOTION EXPENSES',
-                                                'EVERYDAY DHOTIE',
-                                                    'ALLDAYS DHOTIE', 'ADD DHOTIE',
-                                                'ADD SHIRT', 'EVERYDAY SHIRTING',
-                                                'EVERYDAY RDY' )
-                       -- AND t0.u_subgrp7 in ('ZEN')
-                        AND t0.validfor = 'Y'
-                    UNION ALL
+                    SELECT 
+                    t0.itemcode AS ProductCode, 
+                    B.docentry AS PriceListID, 
+                    B.u_brand AS SubBrandCode, 
+                    CASE WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode ELSE t0.itemname END AS BPProductName, 
+                    B.u_state AS PriceListCode, 
+                    NULL AS EffectiveFrom, 
+                    NULL AS EffectiveTo, 
+                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceListIsActive, 
+                    'Dealer' AS BPCategory, 
+                    B.u_selprice AS Price, 
+                    B.u_mrp AS MRP, 
+                    B.lineid AS PriceID, 
+                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceIsActive, 
+                    1 AS SourcePriority 
+                    FROM 
+                    [BBLive].[dbo].oitm t0 
+                    INNER JOIN sizepriced B ON B.u_subgroup7 = t0.u_subgrp7 
+                    AND B.u_subgroup4 = t0.u_subgrp4 
+                    AND B.u_subgroup1 = t0.u_subgrp1 
+                    AND B.u_size = t0.u_subgrp5 
+                    WHERE 
+                    B.u_selprice > 0 
+                    AND B.u_brand NOT IN (
+                        'ACCESSORIES', 'ADVERTISEMENT', 'ALL', 
+                        'SAMPLE', 'PRINTING & STATIONERY', 
+                        'IMPERIAL COMPUTERS', 'PACKING MATERIAL', 
+                        'REPAIRS & MAINTENANCE', 'SALES PROMOTION EXPENSES', 
+                        'EVERYDAY DHOTIE', 'ALLDAYS DHOTIE', 
+                        'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
+                        'EVERYDAY RDY'
+                    ) 
+                    AND t0.u_subgrp7 in ('MOTO') 
+                    AND t0.validfor = 'Y' 
+                    UNION ALL 
                     -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
-                    SELECT t0.itemcode  AS ProductCode,
-                            B.docentry   AS PriceListID,
-                            B.u_state    AS SubBrandCode,
-                            CASE
-                            WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
-                            ELSE t0.itemname
-                            END          AS BPProductName,
-                            B.u_state    AS PriceListCode,
-                            NULL         AS EffectiveFrom,
-                            NULL         AS EffectiveTo,
-                            CASE
-                            WHEN B.u_lock = 'Y' THEN 0
-                            ELSE 1
-                            END          AS PriceListIsActive,
-                            'Dealer'     AS BPCategory,
-                            B.u_selprice AS Price,
-                            B.u_mrp      AS MRP,
-                            B.lineid     AS PriceID,
-                            CASE
-                            WHEN B.u_lock = 'Y' THEN 0
-                            ELSE 1
-                            END          AS PriceIsActive,
-                            2            AS SourcePriority
-                    FROM   [BBLive].[dbo].oitm t0
-                            INNER JOIN itempriced B
-                                    ON B.u_itemcode = t0.itemcode
-                    WHERE  B.u_selprice > 0
-                            AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
-                                                'SAMPLE',
-                                                'PRINTING & STATIONERY',
-                                                'IMPERIAL COMPUTERS',
-                                                    'PACKING MATERIAL',
-                                                'REPAIRS & MAINTENANCE',
-                                                'SALES PROMOTION EXPENSES',
-                                                'EVERYDAY DHOTIE',
-                                                    'ALLDAYS DHOTIE', 'ADD DHOTIE',
-                                                'ADD SHIRT', 'EVERYDAY SHIRTING',
-                                                'EVERYDAY RDY'
-                                                )
-                          --  AND t0.u_subgrp7 in ('ZEN')
-                            AND t0.validfor = 'Y'),
-                ranked
-                AS (SELECT *,
-                            Row_number()
-                            OVER (
-                                partition BY ProductCode, SubBrandCode
-                                ORDER BY sourcepriority ) AS rn
-                    FROM   combined)
-            SELECT ProductCode,
-                PriceListID,
-                SubBrandCode,
-                BPProductName,
-                PriceListCode,
-                EffectiveFrom,
-                EffectiveTo,
-                PriceListIsActive,
-                BPCategory,
-                Price,
-                MRP,
-                PriceID,
-                PriceIsActive
-            FROM   ranked
-            WHERE  rn = 1
+                    SELECT 
+                    t0.itemcode AS ProductCode, 
+                    B.docentry AS PriceListID, 
+                    B.u_state AS SubBrandCode, 
+                    CASE WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode ELSE t0.itemname END AS BPProductName, 
+                    B.u_state AS PriceListCode, 
+                    NULL AS EffectiveFrom, 
+                    NULL AS EffectiveTo, 
+                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceListIsActive, 
+                    'Dealer' AS BPCategory, 
+                    B.u_selprice AS Price, 
+                    B.u_mrp AS MRP, 
+                    B.lineid AS PriceID, 
+                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceIsActive, 
+                    2 AS SourcePriority 
+                    FROM 
+                    [BBLive].[dbo].oitm t0 
+                    INNER JOIN itempriced B ON B.u_itemcode = t0.itemcode 
+                    WHERE 
+                    B.u_selprice > 0 
+                    AND B.u_brand NOT IN (
+                        'ACCESSORIES', 'ADVERTISEMENT', 'ALL', 
+                        'SAMPLE', 'PRINTING & STATIONERY', 
+                        'IMPERIAL COMPUTERS', 'PACKING MATERIAL', 
+                        'REPAIRS & MAINTENANCE', 'SALES PROMOTION EXPENSES', 
+                        'EVERYDAY DHOTIE', 'ALLDAYS DHOTIE', 
+                        'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
+                        'EVERYDAY RDY'
+                    ) 
+                    AND t0.u_subgrp7 in ('MOTO') 
+                    AND t0.validfor = 'Y'
+                ), 
+                ranked AS (
+                    SELECT 
+                    *, 
+                    Row_number() OVER (
+                        partition BY ProductCode, 
+                        SubBrandCode 
+                        ORDER BY 
+                        sourcepriority
+                    ) AS rn 
+                    FROM 
+                    combined
+                ) 
+                SELECT 
+                ProductCode, 
+                PriceListID, 
+                SubBrandCode, 
+                BPProductName, 
+                PriceListCode, 
+                EffectiveFrom, 
+                EffectiveTo, 
+                PriceListIsActive, 
+                BPCategory, 
+                Price, 
+                MRP, 
+                PriceID, 
+                PriceIsActive 
+                FROM 
+                ranked 
+                WHERE 
+                rn = 1
         `;
 
         const { recordset } = await pool.request().query(query);
@@ -592,7 +612,7 @@ async function getSchemeData() {
                 H.Remark AS PolicyName, 
                 CASE WHEN H.U_Discunt = 'Quantity' THEN 'SC' WHEN H.U_Discunt = 'Percentage' THEN 'DIS' END AS SavingType, 
                 H.U_Discunt AS DiscountBasis, 
-                'P' AS Applicability, 
+                'PG' AS Applicability, 
                 1 AS IsCustomerDefined, 
                 1 AS IsActive, 
                 CASE WHEN H.U_bran = 'UATHAYAM DHOTIE' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM SHIRTING' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM RDY' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM HOS' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM KIDS SET' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM MENS SET' THEN 'UATHAYAM' WHEN H.U_bran = 'ARISER SHIRT' THEN 'ARISER' WHEN H.U_bran = 'ARISER MENS TROUSERS' THEN 'ARISER' WHEN H.U_bran = 'ARISER KNITS' THEN 'ARISER' END AS DivisionCode, 
@@ -607,12 +627,13 @@ async function getSchemeData() {
                 ) AS SC_BpCategoryMapping, 
                 (
                     SELECT 
-                    DISTINCT L.U_Stat AS StateCode 
-                    FROM 
-                    [BBLive].[dbo].[@SCHEML] L 
+                    DISTINCT ST.Name AS StateCode 
+                    FROM [BBLive].[dbo].[@SCHEML] L 
+					INNER JOIN [BBLive].[dbo].OCST ST ON ST.Code = L.U_Stat
                     WHERE 
                     L.DocEntry = H.DocEntry 
-                    AND L.U_Stat IS NOT NULL FOR JSON PATH, 
+                    AND L.U_Stat IS NOT NULL 
+					FOR JSON PATH, 
                     INCLUDE_NULL_VALUES
                 ) AS StateMapping, 
                 (
@@ -753,9 +774,16 @@ async function getSchemeData() {
 }
 
 // BP MASTER
-async function getBPMasterData() {
+async function getBPMasterData(cardCodes = null) {
     try {
         const pool = await getPool();
+        const req  = pool.request();
+
+        let codeFilter = '';
+        if (cardCodes && cardCodes.length > 0) {
+            const placeholders = cardCodes.map((c, i) => { req.input(`c${i}`, sql.NVarChar(50), c); return `@c${i}`; }).join(',');
+            codeFilter = `AND T0.CardCode IN (${placeholders})`;
+        }
 
        const query = `
             WITH SubBrandMap AS (
@@ -1038,10 +1066,10 @@ async function getBPMasterData() {
             WHERE T0.CardType = 'C'
             AND T0.validFor = 'Y'
             AND T0.U_AreaCode != ''
-           AND T0.CardCode = 'C043610'
+            ${codeFilter}
             ORDER BY T0.CardCode, SB.DivisionCode, SB.SubBrandName`
 
-        const result = await pool.request().query(query);
+        const result = await req.query(query);
         return result.recordset;
 
     } catch (err) {
@@ -1613,126 +1641,7 @@ async function getBPListPaged({ page = 1, limit = 50, search, pushStatus } = {})
 
 async function getBPMasterDataByCodes(cardCodes) {
     if (!cardCodes || cardCodes.length === 0) return [];
-    const pool = await getPool();
-    const req  = pool.request();
-    const placeholders = cardCodes.map((c, i) => { req.input(`c${i}`, sql.NVarChar(50), c); return `@c${i}`; }).join(',');
-
-    const query = `
-        WITH SubBrandMap AS (
-            SELECT * FROM (VALUES
-                ('ARISER',   'ARISER SHIRT',           'U_Dis7'),
-                ('ARISER',   'ARISER KNITS',             'U_Dis3'),
-                ('ARISER',   'ARISER MENS TROUSERS',   'U_Dis10'),
-                ('UATHAYAM', 'UATHAYAM DHOTIE',        'U_Dis1'),
-                ('UATHAYAM', 'UATHAYAM SHIRTING',      'U_Dis1'),
-                ('UATHAYAM', 'UATHAYAM RDY',           'U_Dis2'),
-                ('UATHAYAM', 'UATHAYAM HOS',           'U_Dis3'),
-                ('UATHAYAM', 'UATHAYAM KIDS SET',      'U_Dis9'),
-                ('UATHAYAM', 'UATHAYAM MENS SET',      'U_Dis11')
-            ) AS X(DivisionCode, SubBrandName, DiscountColumn)
-        )
-        SELECT
-            T0.CardCode AS BPCode, T0.CardName AS BPName, T0.Currency AS DefaultCurrency,
-            CASE WHEN T0.validFor='Y' THEN 1 ELSE 0 END AS IsActive,
-            0 AS AllowCreditLimit, T0.CardFName AS DisplayName,
-            CASE WHEN T0.GroupCode IN ('100','106') THEN 'Dealer' ELSE '' END AS BPCategory,
-            '' AS BPGroupCode, T0.U_showcode AS SR_BPCode,
-            CASE WHEN ISNULL(T0.U_Grade,'') IN ('','-') THEN 'C' ELSE REPLACE(T0.U_Grade,'Grade','') END AS GradeOfBP,
-            '' AS CustomerRemark,
-            CAST(0 AS DECIMAL(18,2)) AS Latitude, CAST(0 AS DECIMAL(18,2)) AS Longitude,
-            T0.U_AreaCode AS AreaCode,
-            SB.DivisionCode, SB.SubBrandName AS Brand, SB.SubBrandName,
-            CAST(CASE SB.DiscountColumn
-                WHEN 'U_Dis1'  THEN ISNULL(T0.U_Dis1,0)  WHEN 'U_Dis2'  THEN ISNULL(T0.U_Dis2,0)
-                WHEN 'U_Dis3'  THEN ISNULL(T0.U_Dis3,0)  WHEN 'U_Dis7'  THEN ISNULL(T0.U_Dis7,0)
-                WHEN 'U_Dis9'  THEN ISNULL(T0.U_Dis9,0)  WHEN 'U_Dis10' THEN ISNULL(T0.U_Dis10,0)
-                WHEN 'U_Dis11' THEN ISNULL(T0.U_Dis11,0) ELSE 0
-            END AS DECIMAL(18,6)) AS DiscountPer,
-            (SELECT (ISNULL(T0.DocEntry,1)+T1.LineNum) AS BillShipID, T1.AdresType AS Type,
-                T0.CardName AS DisplayName,
-                CASE WHEN T1.AdresType='B' THEN 'OFFICE' ELSE 'SHIP' END AS LocationName,
-                ISNULL(NULLIF(CAST(T1.Building AS NVARCHAR(MAX)),''),T1.City) AS Line1,
-                ISNULL(NULLIF(CAST(T1.Block AS NVARCHAR(MAX)),''),T1.City) AS Line2,
-                ISNULL(NULLIF(CAST(T1.Street AS NVARCHAR(MAX)),''),T1.City) AS Line3,
-                CASE WHEN T0.ShipToDef=T1.Address THEN 1 ELSE 0 END AS IsDefault,
-                ISNULL(T1.City,'') AS City, ISNULL(T1.County,T1.Country) AS County,
-                ISNULL(T1.State,'') AS State, ISNULL(T1.Country,'') AS Country,
-                ISNULL(T1.ZipCode,'') AS ZipCode,
-                CASE WHEN LEN(RIGHT(ISNULL(T0.Phone1,''),10))=10 AND RIGHT(ISNULL(T0.Phone1,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone1,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Phone2,''),10))=10 AND RIGHT(ISNULL(T0.Phone2,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone2,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Cellular,''),10))=10 AND RIGHT(ISNULL(T0.Cellular,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Cellular,10)
-                     ELSE '' END AS PhoneNumber,
-                CASE WHEN LEN(RIGHT(ISNULL(T0.Phone1,''),10))=10 AND RIGHT(ISNULL(T0.Phone1,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone1,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Phone2,''),10))=10 AND RIGHT(ISNULL(T0.Phone2,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone2,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Cellular,''),10))=10 AND RIGHT(ISNULL(T0.Cellular,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Cellular,10)
-                     ELSE '' END AS MobileNumber,
-                ISNULL(T0.E_Mail,'') AS Email, ISNULL(T0.U_GSTIN,'') AS GSTNo,
-                CASE WHEN T0.validFor='Y' THEN 1 ELSE 0 END AS IsActive, '' AS GstStatus
-             FROM [BBLive].[dbo].CRD1 T1
-             LEFT JOIN [BBLive].[dbo].OCPR C ON C.CardCode=T1.CardCode
-             WHERE T1.CardCode=T0.CardCode FOR JSON PATH) AS BillShipTo,
-            (SELECT ISNULL(T0.UpdateTS,'') AS MapDivisionID,
-                CAST(0 AS DECIMAL(18,2)) AS AutoApprovalCreditLimit,
-                CAST(0 AS DECIMAL(18,2)) AS AutoApprovalCreditLimitBal,
-                CAST('' AS NVARCHAR(200)) AS BPRemarks,
-                CAST(0 AS DECIMAL(18,2)) AS CreditLimit,
-                ISNULL(T0.City,'') AS Destination,
-                CAST(0 AS DECIMAL(18,2)) AS DiscountPer,
-                SB2.DivisionCode, CAST(0 AS DECIMAL(18,2)) AS ExcessPer,
-                REPLACE(T0.U_Grade,'Grade ','') AS Grade,
-                CAST(1 AS INT) AS IsActive, CAST(0 AS INT) AS IsOrderAutoApproval,
-                CAST(0 AS INT) AS Outstandingdays, ISNULL(T0.U_SalPriceCode,'') AS PriceLisCode,
-                CAST(0 AS INT) AS ShowLimit, CAST('Uathayam' AS NVARCHAR(200)) AS TransporterName
-             FROM (SELECT DISTINCT DivisionCode FROM SubBrandMap) SB2
-             FOR JSON PATH) AS MST_MAP_BP_Division,
-            (SELECT CntctCode AS ContactPersonID, Name AS ContactPersonName,
-                ISNULL(Position,'proprietor') AS Designation,
-                CASE WHEN LEN(RIGHT(ISNULL(T0.Phone1,''),10))=10 AND RIGHT(ISNULL(T0.Phone1,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone1,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Phone2,''),10))=10 AND RIGHT(ISNULL(T0.Phone2,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone2,10)
-                     ELSE '' END AS MobileNum,
-                CASE WHEN LEN(RIGHT(ISNULL(T0.Phone1,''),10))=10 AND RIGHT(ISNULL(T0.Phone1,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone1,10)
-                     WHEN LEN(RIGHT(ISNULL(T0.Phone2,''),10))=10 AND RIGHT(ISNULL(T0.Phone2,''),10) NOT LIKE '%[^0-9]%' THEN RIGHT(T0.Phone2,10)
-                     ELSE '' END AS WhatsAppNum,
-                E_MailL AS EmailID,
-                CASE WHEN Active='Y' THEN 1 ELSE 0 END AS IsActive,
-                CAST(0 AS INT) AS IsSendOverDueReminder, SB.DivisionCode,
-                CAST(0 AS INT) AS PaymentSMS, CAST(0 AS INT) AS PaymentEmail,
-                CAST(1 AS INT) AS PaymentWhatsapp, CAST(1 AS INT) AS OrderEmail,
-                CAST(1 AS INT) AS OrderSMS, CAST(1 AS INT) AS OrderWhatsapp,
-                CAST(1 AS INT) AS InvoiceWhatsapp, CAST(0 AS INT) AS InvoiceEmail,
-                CAST(0 AS INT) AS InvoiceSMS, CAST(0 AS INT) AS PaymentRequestSMS,
-                CAST(0 AS INT) AS PaymentRequestEmail, CAST(0 AS INT) AS PaymentrequestWhatsapp,
-                CAST(0 AS INT) AS OutstandingSMS, CAST(0 AS INT) AS OutstandingEmail,
-                CAST(0 AS INT) AS OutstandingWhatsapp, CAST(0 AS INT) AS PaycollectionWhatsapp,
-                CAST(0 AS INT) AS DistributorWhatsapp
-             FROM [BBLive].[dbo].OCPR WHERE CardCode=T0.CardCode FOR JSON PATH) AS Map_BpContactDetails,
-            (SELECT SB2.SubBrandName AS Brand, SB2.DivisionCode FROM SubBrandMap SB2 FOR JSON PATH) AS MST_MAP_BP_Brand,
-            (SELECT SB2.SubBrandName, SB2.DivisionCode,
-                CAST(CASE SB2.DiscountColumn
-                    WHEN 'U_Dis1' THEN ISNULL(T0.U_Dis1,0) WHEN 'U_Dis2' THEN ISNULL(T0.U_Dis2,0)
-                    WHEN 'U_Dis3' THEN ISNULL(T0.U_Dis3,0) WHEN 'U_Dis7' THEN ISNULL(T0.U_Dis7,0)
-                    WHEN 'U_Dis9' THEN ISNULL(T0.U_Dis9,0) WHEN 'U_Dis10' THEN ISNULL(T0.U_Dis10,0)
-                    WHEN 'U_Dis11' THEN ISNULL(T0.U_Dis11,0) ELSE 0
-                END AS DECIMAL(18,6)) AS DiscountPer
-             FROM SubBrandMap SB2 FOR JSON PATH) AS MST_Map_BP_SubBrand,
-            (SELECT 'TRADE DISCOUNT' AS DiscountName, SB3.DivisionCode, SB3.SubBrandName AS Brand,
-                CAST(CASE SB3.DiscountColumn
-                    WHEN 'U_Dis1' THEN ISNULL(T0.U_Dis1,0) WHEN 'U_Dis2' THEN ISNULL(T0.U_Dis2,0)
-                    WHEN 'U_Dis3' THEN ISNULL(T0.U_Dis3,0) WHEN 'U_Dis7' THEN ISNULL(T0.U_Dis7,0)
-                    WHEN 'U_Dis9' THEN ISNULL(T0.U_Dis9,0) WHEN 'U_Dis10' THEN ISNULL(T0.U_Dis10,0)
-                    WHEN 'U_Dis11' THEN ISNULL(T0.U_Dis11,0) ELSE 0
-                END AS DECIMAL(18,6)) AS DiscountPer,
-                CONVERT(VARCHAR(19),CAST('2019-04-01' AS DATETIME),126) AS FromDate,
-                CONVERT(VARCHAR(19),CAST('2030-03-31' AS DATETIME),126) AS ToDate
-             FROM SubBrandMap SB3 FOR JSON PATH) AS Discount_BP_Division
-        FROM [BBLive].[dbo].OCRD T0
-        CROSS JOIN SubBrandMap SB
-        WHERE T0.CardType='C' AND T0.validFor='Y' AND T0.U_AreaCode != ''
-          AND T0.CardCode IN (${placeholders})
-        ORDER BY T0.CardCode, SB.DivisionCode, SB.SubBrandName
-    `;
-    const result = await req.query(query);
-    return result.recordset;
+    return getBPMasterData(cardCodes);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
