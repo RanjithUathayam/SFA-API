@@ -397,7 +397,7 @@ exports.syncStockInventory = async (req, res) => {
                 `Active: ${r.IsActive}`
             )
         );
-    
+        
         const sfResult = await sfService.upsertStockInventory(payload);
  
         divider('STOCK INVENTORY SYNC COMPLETE');

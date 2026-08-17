@@ -234,8 +234,33 @@ async function runAttendanceSync(punchTypeLabel, punchTypeCode) {
             return;
         }
 
-        let inserted = 0, skipped = 0, failed = 0;
+        if (!sfRecords.length) {
+            log.warn(`No ${punchTypeLabel} records in Salesforce — nothing to sync.`);
+            return;
+        }
 
+        // Sort by EmployeeId then AttendenceTime__c
+        // Check-In (I) -> ascending | Check-Out (O) -> descending
+        sfRecords.sort((a, b) => {
+            const empA = a.dmpl__ResourceId__r?.EmployeeId__c || '';
+            const empB = b.dmpl__ResourceId__r?.EmployeeId__c || '';
+
+            if (empA !== empB) {
+                return isCheckIn
+                    ? empA.localeCompare(empB)   
+                    : empB.localeCompare(empA); 
+            }
+
+            const timeA = new Date(a.AttendenceTime__c).getTime();
+            const timeB = new Date(b.AttendenceTime__c).getTime();
+
+            return isCheckIn
+                ? timeA - timeB   
+                : timeB - timeA;  
+        });
+
+        let inserted = 0, skipped = 0, failed = 0;
+        
         for (const record of sfRecords) {
             const RefId      = record.Id;
             const EmployeeId = record.dmpl__ResourceId__r?.EmployeeId__c;

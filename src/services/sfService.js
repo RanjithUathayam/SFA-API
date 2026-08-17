@@ -630,7 +630,7 @@ async function upsertStockInventory(payload) {
         const range    = `records ${batchIdx * STOCK_BATCH_SIZE + 1}–${Math.min((batchIdx + 1) * STOCK_BATCH_SIZE, total)}`;
  
         log.info(`Batch ${batchNum}/${totalBatch} — sending ${batch.length} record(s) (${range})`);
- 
+        console.log("***********",batch)
         try {
             const response = await withRetry(
                 () => axios.post(url, batch, { headers, timeout: REQ_TIMEOUT }),

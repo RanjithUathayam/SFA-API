@@ -161,7 +161,7 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
                     'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
                     'EVERYDAY RDY'
                 ) 
-               -- AND t0.U_SubGrp7 IN ('CRIPE POLO T SHIRT')
+                --AND t0.U_SubGrp7 IN ('VUDU','VENICE','DOUBLE DELIGHT')
                 ORDER BY t0.ItemCode
         OFFSET @offset ROWS
         FETCH NEXT @limit ROWS ONLY`
@@ -221,7 +221,7 @@ async function getPriceListData() {
                                         ON T0b.docentry = T2b.docentry
                                         AND T2b.u_selected = 'Y'
                         WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                           -- AND T1b.u_subgroup7 in ('VIRZOD')
+                            --AND T1b.u_subgroup7 in ('VUDU','VENICE','DOUBLE DELIGHT')
                                 AND T3b.u_mrp > 0),
                     combined
                     AS (
@@ -268,7 +268,7 @@ async function getPriceListData() {
                                                         'ALLDAYS DHOTIE', 'ADD DHOTIE',
                                                     'ADD SHIRT', 'EVERYDAY SHIRTING',
                                                     'EVERYDAY RDY' )
-                            --AND t0.u_subgrp7 in ('VIRZOD')
+                           -- AND t0.u_subgrp7 in ('VUDU','VENICE','DOUBLE DELIGHT')
                             AND t0.validfor = 'Y'
                         UNION ALL
                         -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
@@ -312,7 +312,7 @@ async function getPriceListData() {
                                                     'EVERYDAY RDY'
                                                     )
                                 AND t0.validfor = 'Y'
-                                --AND t0.u_subgrp7 in ('VIRZOD')
+                               -- AND t0.u_subgrp7 in ('VUDU','VENICE','DOUBLE DELIGHT')
                                  ),
                     ranked
                     AS (SELECT *,
@@ -369,195 +369,7 @@ async function getImageData() {
 
 async function getSchemeData() {
     try {
-        const pool = await getPool()
-        // WITH 
-            //     HeaderLine AS (
-            //         SELECT 
-            //         T0.DocEntry, 
-            //         T0.[Object], 
-            //         T0.Remark, 
-            //         T0.U_FrmDt, 
-            //         T0.U_ToDt, 
-            //         T1.U_Discunt, 
-            //         T1.U_bran, 
-            //         ROW_NUMBER() OVER (
-            //             PARTITION BY T0.DocEntry 
-            //             ORDER BY 
-            //             (
-            //                 SELECT 
-            //                 NULL
-            //             )
-            //         ) AS rn 
-            //         FROM 
-            //         [BBLive].[dbo].[@SCHEM] T0 
-            //         INNER JOIN [BBLive].[dbo].[@SCHEML] T1 ON T0.DocEntry = T1.DocEntry 
-            //         WHERE 
-            //         GETDATE() BETWEEN T0.U_FrmDt 
-            //         AND T0.U_ToDt
-            //     ) 
-            //     SELECT 
-            //     CAST(
-            //         CONCAT(H.[Object], H.DocEntry) AS NVARCHAR(50)
-            //     ) AS PolicyNumber, 
-            //     1 AS Revision, 
-            //     H.DocEntry AS PolicyID, 
-            //     H.Remark AS PolicyName, 
-            //     CASE WHEN H.U_Discunt = 'Quantity' THEN 'SC' WHEN H.U_Discunt = 'Percentage' THEN 'DIS' END AS SavingType, 
-            //     H.U_Discunt AS DiscountBasis, 
-            //     'P' AS Applicability, 
-            //     1 AS IsCustomerDefined, 
-            //     1 AS IsActive, 
-            //     CASE WHEN H.U_bran = 'UATHAYAM DHOTIE' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM SHIRTING' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM RDY' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM HOS' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM KIDS SET' THEN 'UATHAYAM' WHEN H.U_bran = 'UATHAYAM MENS SET' THEN 'UATHAYAM' WHEN H.U_bran = 'ARISER SHIRT' THEN 'ARISER' WHEN H.U_bran = 'ARISER MENS TROUSERS' THEN 'ARISER' WHEN H.U_bran = 'ARISER KNITS' THEN 'ARISER' END AS DivisionCode, 
-            //     GETDATE() AS FromDate, 
-            //     '2026-12-31T00:00:00' AS ToDate, 
-            //     0 AS AllowDiscountForAllProducts, 
-            //     NULL AS DiscountPer, 
-            //     (
-            //         SELECT 
-            //         'DEALER' AS BPCategory FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_BpCategoryMapping, 
-            //     (
-            //         SELECT 
-            //         DISTINCT L.U_Stat AS StateCode 
-            //         FROM 
-            //         [BBLive].[dbo].[@SCHEML] L 
-            //         WHERE 
-            //         L.DocEntry = H.DocEntry 
-            //         AND L.U_Stat IS NOT NULL FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS StateMapping, 
-            //     (
-            //         SELECT 
-            //         'DEALER' AS Role FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS RoleMapping, 
-            //     (
-            //         SELECT 
-            //         NULL AS BPCode FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_BpExclution, 
-            //     (
-            //         SELECT 
-            //         DISTINCT C.CardCode AS BPCode 
-            //         FROM 
-            //         [BBLive].[dbo].OCRD C 
-            //         INNER JOIN [BBLive].[dbo].CRD1 D ON C.CardCode = D.CardCode 
-            //         AND D.AdresType = 'B' 
-            //         WHERE 
-            //         D.State IN (
-            //             SELECT 
-            //             DISTINCT L.U_Stat 
-            //             FROM 
-            //             [BBLive].[dbo].[@SCHEML] L 
-            //             WHERE 
-            //             L.DocEntry = H.DocEntry
-            //         ) FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_BpInclution, 
-            //     (
-            //         SELECT 
-            //         I.ItemCode AS ProductCode, 
-            //         I.U_Size AS SizeCode, 
-            //         I.U_SubGrp6 AS ColorCode, 
-            //         CAST(
-            //             L.U_BillsQty AS DECIMAL(10, 2)
-            //         ) AS MinOrderQty, 
-            //         CAST(
-            //             L.U_OffersQty AS DECIMAL(10, 2)
-            //         ) AS FreeQty, 
-            //         'S' AS Applicability, 
-            //         L.U_OffersQty AS AllowMultiplyFreeQty, 
-            //         CAST(
-            //             L.U_BillsQty AS DECIMAL(10, 2)
-            //         ) AS MaxAllowedFreeQty, 
-            //         1 AS IsActive, 
-            //         1 AS MappingStatus, 
-            //         (
-            //             SELECT 
-            //             ALT.ItemCode AS ProductCode, 
-            //             ALT.U_Size AS SizeCode, 
-            //             ALT.U_SubGrp6 AS ColorCode, 
-            //             0 AS IsActive 
-            //             FROM 
-            //             [BBLive].[dbo].OITM ALT 
-            //             WHERE 
-            //             ALT.ItemCode = I.ItemCode 
-            //             AND ALT.validFor = 'Y' FOR JSON PATH, 
-            //             INCLUDE_NULL_VALUES
-            //         ) AS SC_ProdAlternate 
-            //         FROM 
-            //         [BBLive].[dbo].[@SCHEML] L 
-            //         INNER JOIN [BBLive].[dbo].OITM I ON I.U_SubGrp7 = L.U_Qual 
-            //         WHERE 
-            //         I.validFor = 'Y' 
-            //         AND L.DocEntry = H.DocEntry FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProductMapping, 
-            //     (
-            //         SELECT 
-            //         NULL AS GroupCode, 
-            //         NULL AS StyleCode, 
-            //         NULL AS MinOrderQty, 
-            //         NULL AS FreeQty, 
-            //         NULL AS Applicability, 
-            //         0 AS AllowMultiplyFreeQty, 
-            //         NULL AS MaxAllowedFreeQty, 
-            //         NULL AS GroupName, 
-            //         0 AS IsActive, 
-            //         0 AS MappingStatus FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProdGroupMapping, 
-            //     (
-            //         SELECT 
-            //         NULL AS ProductCode, 
-            //         NULL AS SizeCode, 
-            //         NULL AS ColorCode, 
-            //         0 AS IsActive FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProdAlternate, 
-            //     (
-            //         SELECT 
-            //         NULL AS GroupName, 
-            //         NULL AS StyleCode, 
-            //         0 AS IsActive FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProdGroupAlternate, 
-            //     (
-            //         SELECT 
-            //         NULL AS Brand, 
-            //         NULL AS DiscountType, 
-            //         NULL AS DiscountVal, 
-            //         0 AS IsActive FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_Brand_Discount, 
-            //     (
-            //         SELECT 
-            //         NULL AS DivisionCode, 
-            //         NULL AS GroupCode, 
-            //         NULL AS GroupName, 
-            //         NULL AS StyleCode, 
-            //         NULL AS StyleName, 
-            //         NULL AS DiscountType, 
-            //         NULL AS DiscountVal, 
-            //         0 AS IsActive FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProdGroupDirectDiscount, 
-            //     (
-            //         SELECT 
-            //         NULL AS ProductCode, 
-            //         NULL AS SizeCode, 
-            //         NULL AS ColorCode, 
-            //         NULL AS DiscountType, 
-            //         NULL AS DiscountVal, 
-            //         0 AS IsActive FOR JSON PATH, 
-            //         INCLUDE_NULL_VALUES
-            //     ) AS SC_ProductDirectDiscount 
-            //     FROM 
-            //     HeaderLine H 
-            //     WHERE 
-            //     H.rn = 1;
-    
+        const pool = await getPool()    
         const query = `
             WITH 
                 HeaderLine AS (
@@ -668,33 +480,63 @@ async function getSchemeData() {
 					FOR JSON PATH, INCLUDE_NULL_VALUES
 				) AS SC_ProductMapping, 
                 (
-                    SELECT DISTINCT
-						CAST(CONCAT(L.DocEntry, L.LineId) AS NVARCHAR(50)) AS MappingID,
-						L.U_Qual AS GroupCode,
-						L.U_Qual AS StyleCode,
-						CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MinOrderQty,
-						CAST(L.U_OffersQty AS DECIMAL(10,2)) AS FreeQty,
-						'S' AS Applicability,
-						1 AS AllowMultiplyFreeQty,
-						CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MaxAllowedFreeQty,
-						L.U_Qual AS GroupName,
-						1 AS IsActive,
-						1 AS MappingStatus,
-						(
-							SELECT DISTINCT
-								ALT.U_SubGrp7 AS GroupName,
-								ALT.U_SubGrp7 AS StyleName,
-								0 AS IsActive
-							FROM [BBLive].[dbo].OITM ALT
-							WHERE ALT.U_SubGrp7 = L.U_Qual
-							  AND ALT.validFor = 'Y'
-							FOR JSON PATH, INCLUDE_NULL_VALUES
-						) AS SC_ProdAlternate
-					FROM  [BBLive].[dbo].[@SCHEML] L 
-					INNER JOIN [BBLive].[dbo].OITM I ON I.U_SubGrp7 = L.U_Qual 
-					WHERE  I.validFor = 'Y' 
-					AND L.DocEntry = H.DocEntry FOR JSON PATH, 
-					INCLUDE_NULL_VALUES
+					SELECT
+						SD.MappingID,
+						SD.GroupCode,
+						SD.StyleCode,
+						SD.MinOrderQty,
+						SD.FreeQty,
+						SD.Applicability,
+						SD.AllowMultiplyFreeQty,
+						SD.MaxAllowedFreeQty,
+						SD.GroupName,
+						SD.IsActive,
+						SD.MappingStatus,
+						SD.SC_ProdAlternate
+					FROM
+					(
+						SELECT
+							CAST(CONCAT(L.DocEntry, L.LineId) AS NVARCHAR(50)) AS MappingID,
+							L.U_Qual AS GroupCode,
+							I.U_SubGrp4 AS StyleCode,
+							CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MinOrderQty,
+							CAST(L.U_OffersQty AS DECIMAL(10,2)) AS FreeQty,
+							'S' AS Applicability,
+							1 AS AllowMultiplyFreeQty,
+							CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MaxAllowedFreeQty,
+							L.U_Qual AS GroupName,
+							1 AS IsActive,
+							1 AS MappingStatus,
+
+							(
+								SELECT DISTINCT
+									ALT.U_SubGrp7 AS GroupName,
+									ALT.U_SubGrp7 AS StyleName,
+									0 AS IsActive
+								FROM [BBLive].[dbo].OITM ALT
+								WHERE ALT.U_SubGrp7 = L.U_Qual
+									AND ALT.validFor = 'Y'
+								FOR JSON PATH, INCLUDE_NULL_VALUES
+							) AS SC_ProdAlternate,
+
+							ROW_NUMBER() OVER
+							(
+								PARTITION BY L.U_Qual, I.U_SubGrp4
+								ORDER BY L.LineId
+							) AS RN
+
+						FROM [BBLive].[dbo].[@SCHEML] L
+						INNER JOIN [BBLive].[dbo].OITM I
+							ON I.U_SubGrp7 = L.U_Qual
+
+						WHERE I.validFor = 'Y'
+							AND L.DocEntry = H.DocEntry
+							AND I.U_SubGrp4 IS NOT NULL
+					) SD
+
+					WHERE SD.RN = 1
+
+					FOR JSON PATH, INCLUDE_NULL_VALUES
                 ) AS SC_ProdGroupMapping, 
                 (
                     SELECT 
@@ -1067,8 +909,8 @@ async function getStockData() {
             SELECT
                 t0.DocEntry                                                        AS ExternalId,
                 t0.DocEntry                                                        AS ProductMappingId,
-                t0.ItemCode                                                 AS ProductCode,
-                t0.U_SubGrp13                                                AS ColorCode,
+                t0.ItemCode                                                         AS ProductCode,
+                ISNULL(t0.U_SubGrp6, t0.U_SubGrp11)                                  AS ColorCode,
                 t0.U_SubGrp7                                                AS AttributeValue,
                 t0.U_SubGrp4                                                AS StyleCode,
                 t0.U_Size                                                   AS Size,
@@ -1082,8 +924,18 @@ async function getStockData() {
                     ELSE 'Stock Available' END                         AS StockMessage
             FROM [BBLive].[dbo].OITM AS t0
             INNER JOIN [BBLive].[dbo].OITW AS t1 ON t0.ItemCode = t1.ItemCode
-            WHERE t1.WhsCode = 'ASRS' 
-            and T0.ValidFor = 'Y'
+            WHERE t1.WhsCode = 'ASRS'
+            AND t0.validFor = 'Y' 
+            AND t0.U_SubGrp1 NOT IN (
+                'ACCESSORIES', 'ADVERTISEMENT', 'ALL', 
+                'SAMPLE', 'PRINTING & STATIONERY', 
+                'IMPERIAL COMPUTERS', 'PACKING MATERIAL', 
+                'REPAIRS & MAINTENANCE', 'SALES PROMOTION EXPENSES', 
+                'EVERYDAY DHOTIE', 'ALLDAYS DHOTIE', 
+                'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
+                'EVERYDAY RDY'
+            ) 
+            AND CAST(t1.OnHand AS INT)  > 0
             ORDER BY t0.ItemCode
         `;
 
