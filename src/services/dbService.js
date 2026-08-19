@@ -935,7 +935,7 @@ async function getStockData() {
                 'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
                 'EVERYDAY RDY'
             ) 
-            AND t0.U_SubGrp7 IN ('ZURICH PLUS')
+            --AND t0.U_SubGrp7 IN ('ZURICH PLUS')
             AND CAST(t1.OnHand AS INT)  > 0
             ORDER BY t0.ItemCode
         `;
