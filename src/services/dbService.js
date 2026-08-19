@@ -913,7 +913,7 @@ async function getStockData() {
                 ISNULL(t0.U_SubGrp6, t0.U_SubGrp11)                                  AS ColorCode,
                 t0.U_SubGrp7                                                AS AttributeValue,
                 t0.U_SubGrp4                                                AS StyleCode,
-                t0.U_Size                                                   AS Size,
+                RTRIM(t0.U_SubGrp5)                                                  AS Size,
                 CAST(t1.OnHand AS INT)                                      AS StockQuantity,
                 'Stock'                                                     AS Type,
                 CASE WHEN t0.ValidFor = 'Y' THEN CAST(1 AS BIT)
@@ -935,6 +935,7 @@ async function getStockData() {
                 'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
                 'EVERYDAY RDY'
             ) 
+            AND t0.U_SubGrp7 IN ('ZURICH PLUS')
             AND CAST(t1.OnHand AS INT)  > 0
             ORDER BY t0.ItemCode
         `;
