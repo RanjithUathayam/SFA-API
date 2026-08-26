@@ -65,7 +65,8 @@ function mapToSalesforcePayload(rows) {
                 Shade      : row.Shade,
                 Min_Qty    : row.Min_Qty || 1,
                 Max_Qty    : row.Max_Qty || 100000,
-                IsCoreColor: row.IsCoreColor
+                IsCoreColor: row.IsCoreColor,
+                ColorSortby: parseInt(row.ColorSort) 
             });
         }
 

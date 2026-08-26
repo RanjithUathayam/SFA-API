@@ -543,25 +543,25 @@ function startCronJobs() {
         async () => { await runAttendanceSync('Check-In',  'I'); }
     );
 
-    scheduleDaily(11,  15, 'Attendance Check-In Sync (11:15 AM IST)',
-        async () => { await runEhrPushSync('I') }
-    );
+    // scheduleDaily(11,  15, 'Attendance Check-In Sync (11:15 AM IST)',
+    //     async () => { await runEhrPushSync('I') }
+    // );
 
     scheduleDaily(14,  0, 'Attendance Check-In Sync (2:00 PM IST)',
         async () => { await runAttendanceSync('Check-In',  'I'); }
     );
 
-    scheduleDaily(14,  15, 'Attendance Check-In Sync (2:00 PM IST)',
-        async () => { await runEhrPushSync('I') }
-    );
+    // scheduleDaily(14,  15, 'Attendance Check-In Sync (2:00 PM IST)',
+    //     async () => { await runEhrPushSync('I') }
+    // );
 
     scheduleDaily(23, 30, 'Attendance Check-Out Sync (11:30 PM IST)',
         async () => { await runAttendanceSync('Check-Out', 'O'); }
     );
 
-    scheduleDaily(23, 40, 'Attendance Check-Out Sync (11:30 PM IST)',
-        async () => { await runEhrPushSync('O'); }
-    );
+    // scheduleDaily(23, 40, 'Attendance Check-Out Sync (11:30 PM IST)',
+    //     async () => { await runEhrPushSync('O'); }
+    // );
 
     log.banner('CRON SCHEDULER READY');
 }
