@@ -96,7 +96,6 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
             'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
             'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
         )
-        AND t0.U_SubGrp7 = 'AMAZING'
         ORDER BY t0.ItemCode
         OFFSET @offset ROWS
         FETCH NEXT @limit ROWS ONLY`
@@ -156,7 +155,7 @@ async function getPriceListData() {
                                         ON T0b.docentry = T2b.docentry
                                         AND T2b.u_selected = 'Y'
                         WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                                AND T1b.u_subgroup7 in ('ULTIMATE')
+                                --AND T1b.u_subgroup7 in ('ULTIMATE')
                                 AND T3b.u_mrp > 0
 					 ),
                     combined
@@ -204,7 +203,7 @@ async function getPriceListData() {
                                                         'ALLDAYS DHOTIE', 'ADD DHOTIE',
                                                     'ADD SHIRT', 'EVERYDAY SHIRTING',
                                                     'EVERYDAY RDY' )
-							AND t0.u_subgrp7 in ('ULTIMATE')
+							--AND t0.u_subgrp7 in ('ULTIMATE')
                             AND t0.validfor = 'Y'
                         UNION ALL
                         -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
@@ -248,7 +247,7 @@ async function getPriceListData() {
                                                     'EVERYDAY RDY'
                                                     )
                                 AND t0.validfor = 'Y'
-								AND t0.u_subgrp7 in ('ULTIMATE')
+								--AND t0.u_subgrp7 in ('ULTIMATE')
                                  ),
                     ranked
                     AS (SELECT *,
@@ -673,7 +672,7 @@ async function getBPMasterData(cardCodes = null) {
                         CAST(0 AS DECIMAL(18,2))            AS DiscountPer,
                         SB2.DivisionCode                    AS DivisionCode,
                         CAST(0 AS DECIMAL(18,2))            AS ExcessPer,
-                        REPLACE(T0.U_Grade,'Grade ','')     AS Grade,
+                        REPLACE(T0.U_Grade,'Grade','')     AS Grade,
                         CAST(1 AS INT)                      AS IsActive,
                         CAST(0 AS INT)                      AS IsOrderAutoApproval,
                         CAST(0 AS INT)                      AS Outstandingdays,
@@ -842,38 +841,186 @@ async function getStockData() {
         const pool = await getPool();
 
         const query = `
-            SELECT
-                t0.DocEntry                                                        AS ExternalId,
-                t0.DocEntry                                                        AS ProductMappingId,
-                t0.ItemCode                                                         AS ProductCode,
-                ISNULL(t0.U_SubGrp6, t0.U_SubGrp11)                                  AS ColorCode,
-                t0.U_SubGrp7                                                AS AttributeValue,
-                t0.U_SubGrp4                                                AS StyleCode,
-                RTRIM(t0.U_SubGrp5)                                                  AS Size,
-                CAST(t1.OnHand AS INT)                                      AS StockQuantity,
-                'Stock'                                                     AS Type,
-                CASE WHEN t0.ValidFor = 'Y' THEN CAST(1 AS BIT)
-                    ELSE CAST(0 AS BIT) END                                AS IsActive,
-                CASE WHEN t0.MinLevel > t1.OnHand THEN 'High Stock'
-                    ELSE 'Low Stock' END                                   AS StockHighlightMessageDetails,
-                CASE WHEN CAST(t0.MinLevel AS INT)  > CAST(t1.OnHand AS INT) THEN 'Very few stock left'
-                    ELSE 'Stock Available' END                         AS StockMessage
-            FROM [BBLive].[dbo].OITM AS t0
-            INNER JOIN [BBLive].[dbo].OITW AS t1 ON t0.ItemCode = t1.ItemCode
-            WHERE t1.WhsCode = 'ASRS'
-            AND t0.validFor = 'Y' 
+            WITH
+            JOAgg AS (
+                -- Job Order pending quantity per item
+                SELECT
+                    jo.U_ItemCode AS ItemCode,
+                    SUM(jo.PENDQTY) AS JOPendQty
+                FROM
+                    (
+                        SELECT
+                            a.DocNum,
+                            b.U_ItemCode,
+                            SUM(ISNULL(b.U_OrderQty, 0)) - (
+                                SUM(ISNULL(b.U_AccpQty, 0)) + SUM(ISNULL(b.U_RejQty, 0))
+                            ) AS PENDQTY
+                        FROM
+                            [BBLive].[dbo].[@INSC_OJOR] a WITH (NOLOCK)
+                            LEFT JOIN [BBLive].[dbo].[@INSC_JOR1] b WITH (NOLOCK) ON a.DocEntry = b.DocEntry
+                        WHERE
+                            a.U_Status = 'O'
+                            AND b.U_OrderQty > 0
+                            AND b.U_OperName NOT IN (
+                                'IRONING', 'FOLDING 6.50X11.75', 'WASHING 6.50X11.75'
+                            )
+                        GROUP BY
+                            a.DocNum,
+                            b.U_ItemCode
+                    ) jo
+                GROUP BY
+                    jo.U_ItemCode
+            ),
+            POAgg AS (
+                -- Purchase Order pending (open qty) per item
+                SELECT
+                    po.ItemCode,
+                    SUM(po.RemQty) AS OpenPORemQty
+                FROM
+                    (
+                        SELECT
+                            x.DocNum,
+                            x.ItemCode,
+                            SUM(ISNULL(x.OrderQty, 0)) - SUM(ISNULL(x.GRNQty, 0)) AS RemQty
+                        FROM
+                            (
+                                SELECT
+                                    t0.DocNum,
+                                    t1.ItemCode,
+                                    t1.Quantity AS OrderQty,
+                                    0 AS GRNQty
+                                FROM
+                                    [BBLive].[dbo].OPOR t0 WITH (NOLOCK)
+                                    INNER JOIN [BBLive].[dbo].POR1 t1 WITH (NOLOCK) ON t0.DocEntry = t1.DocEntry
+                                WHERE
+                                    t0.DocStatus = 'O'
+                                    AND t1.LineStatus = 'O'
+                                    AND t0.CANCELED = 'N'
+                                UNION ALL
+                                SELECT
+                                    t0.DocNum,
+                                    t1.ItemCode,
+                                    0 AS OrderQty,
+                                    ISNULL(t2.Quantity, 0) AS GRNQty
+                                FROM
+                                    [BBLive].[dbo].OPOR t0 WITH (NOLOCK)
+                                    INNER JOIN [BBLive].[dbo].POR1 t1 WITH (NOLOCK) ON t0.DocEntry = t1.DocEntry
+                                    LEFT JOIN [BBLive].[dbo].PDN1 t2 WITH (NOLOCK) ON t2.BaseEntry = t1.DocEntry
+                                        AND t2.BaseType = '22'
+                                        AND t2.ItemCode = t1.ItemCode
+                                        AND t2.BaseLine = t1.LineNum
+                                        AND t2.DocEntry IN (
+                                            SELECT DocEntry
+                                            FROM [BBLive].[dbo].OPDN WITH (NOLOCK)
+                                            WHERE CANCELED = 'N'
+                                        )
+                                WHERE
+                                    t0.DocStatus = 'O'
+                                    AND t1.LineStatus = 'O'
+                                    AND t0.CANCELED = 'N'
+                            ) x
+                        GROUP BY
+                            x.DocNum,
+                            x.ItemCode
+                        HAVING
+                            SUM(ISNULL(x.OrderQty, 0)) - SUM(ISNULL(x.GRNQty, 0)) > 0
+                    ) po
+                GROUP BY
+                    po.ItemCode
+            ),
+            SOAgg AS (
+                -- Pending Sales Order quantity per item
+                SELECT
+                    y.ItemCode,
+                    SUM(ISNULL(y.OpenCreQty, 0)) AS PendingSOQty
+                FROM
+                    [BBLive].[dbo].ORDR x WITH (NOLOCK)
+                    INNER JOIN [BBLive].[dbo].RDR1 y WITH (NOLOCK) ON x.DocEntry = y.DocEntry
+                WHERE
+                    x.DocStatus = 'O'
+                    AND y.LineStatus = 'O'
+                GROUP BY
+                    y.ItemCode
+            ),
+            StockAgg AS (
+                -- Collapses OITW to ONE row per item
+                SELECT
+                    t1.ItemCode,
+                    SUM(t1.OnHand) AS TotalOnHand
+                FROM
+                    [BBLive].[dbo].OITW t1 WITH (NOLOCK)
+                    INNER JOIN [BBLive].[dbo].OWHS t2 WITH (NOLOCK) ON t2.WhsCode = t1.WhsCode
+                WHERE
+                    t2.GlblLocNum = 1
+                GROUP BY
+                    t1.ItemCode
+            )
+        SELECT
+            t0.DocEntry AS ExternalId,
+            t0.DocEntry AS ProductMappingId,
+            t0.ItemCode AS ProductCode,
+            ISNULL(t0.U_SubGrp6, t0.U_SubGrp11) AS ColorCode,
+            t0.U_SubGrp7 AS AttributeValue,
+            t0.U_SubGrp4 AS StyleCode,
+            RTRIM(t0.U_SubGrp5) AS Size,
+            CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END AS StockQuantity,
+            'Stock' AS Type,
+            CASE WHEN t0.ValidFor = 'Y' THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS IsActive,
+            CAST(t0.U_Runnout AS NVARCHAR(10)) AS RunningOutFlag,
+            ISNULL(jo.JOPendQty, 0) AS JOPendingQty,
+            ISNULL(po.OpenPORemQty, 0) AS POPendingQty,
+            ISNULL(so.PendingSOQty, 0) AS SOPendingQty,
+            -- ===== Four-stage stock category =====
+            CASE
+                -- 1. Unavailable
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
+                -- 2. Excess Orders
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                -- 3. In Stock - High
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
+                -- 4. In Stock - Low
+                ELSE 'Low Stock'
+            END AS StockCategory,
+            CASE
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
+                ELSE 'Low Stock'
+            END AS StockHighlightMessageDetails,
+            CASE
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
+                ELSE 'Low Stock'
+            END AS StockMessage
+        FROM
+            [BBLive].[dbo].OITM AS t0 WITH (NOLOCK)
+            LEFT JOIN StockAgg stk ON stk.ItemCode = t0.ItemCode
+            LEFT JOIN [BBLive].[dbo].setstockall AS t3 WITH (NOLOCK) ON t0.ItemCode = t3.Code
+            LEFT JOIN JOAgg jo ON jo.ItemCode = t0.ItemCode
+            LEFT JOIN POAgg po ON po.ItemCode = t0.ItemCode
+            LEFT JOIN SOAgg so ON so.ItemCode = t0.ItemCode
+        WHERE
+            t0.ValidFor = 'Y'
             AND t0.U_SubGrp1 NOT IN (
-                'ACCESSORIES', 'ADVERTISEMENT', 'ALL', 
-                'SAMPLE', 'PRINTING & STATIONERY', 
-                'IMPERIAL COMPUTERS', 'PACKING MATERIAL', 
-                'REPAIRS & MAINTENANCE', 'SALES PROMOTION EXPENSES', 
-                'EVERYDAY DHOTIE', 'ALLDAYS DHOTIE', 
-                'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING', 
+                'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
+                'SAMPLE', 'PRINTING & STATIONERY',
+                'IMPERIAL COMPUTERS', 'PACKING MATERIAL',
+                'REPAIRS & MAINTENANCE', 'SALES PROMOTION EXPENSES',
+                'EVERYDAY DHOTIE', 'ALLDAYS DHOTIE',
+                'ADD DHOTIE', 'ADD SHIRT', 'EVERYDAY SHIRTING',
                 'EVERYDAY RDY'
-            ) 
-            --AND t0.U_SubGrp7 IN ('ZURICH PLUS')
-            AND CAST(t1.OnHand AS INT)  > 0
-            ORDER BY t0.ItemCode
+            )
+            --AND ISNULL(stk.TotalOnHand, 0) > 0
+            AND t0.U_SubGrp7 = 'RN TSHIRT'
+        ORDER BY
+            t0.ItemCode;
         `;
 
         const { recordset } = await pool.request().query(query);
