@@ -975,9 +975,9 @@ async function getStockData() {
                 -- 1. Unavailable
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
                     AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
-                -- 2. Excess Orders
+                -- 2. Excess Order
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
-                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Order'
                 -- 3. In Stock - High
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
                 -- 4. In Stock - Low
@@ -987,7 +987,7 @@ async function getStockData() {
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
                     AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
-                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Order'
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
                 ELSE 'Low Stock'
             END AS StockHighlightMessageDetails,
@@ -995,7 +995,7 @@ async function getStockData() {
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
                     AND CAST(t0.U_Runnout AS NVARCHAR(10)) = 'Yes' THEN 'Unavailable'
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END + ISNULL(jo.JOPendQty, 0) + ISNULL(po.OpenPORemQty, 0) - ISNULL(so.PendingSOQty, 0)) < 0
-                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Orders'
+                    AND (CAST(t0.U_Runnout AS NVARCHAR(10)) <> 'Yes' OR t0.U_Runnout IS NULL) THEN 'Excess Order'
                 WHEN (CASE WHEN t0.ItemType = 'S' THEN t3.Stock ELSE ISNULL(stk.TotalOnHand, 0) END - ISNULL(so.PendingSOQty, 0)) > 1000 THEN 'In Stock'
                 ELSE 'Low Stock'
             END AS StockMessage
@@ -1018,7 +1018,6 @@ async function getStockData() {
                 'EVERYDAY RDY'
             )
             --AND ISNULL(stk.TotalOnHand, 0) > 0
-            AND t0.U_SubGrp7 = 'RN TSHIRT'
         ORDER BY
             t0.ItemCode;
         `;
