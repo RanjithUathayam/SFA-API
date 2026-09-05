@@ -17,7 +17,7 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
     const query = `SELECT DISTINCT
             t0.ItemCode AS ProductCode,
             case when t0.U_SubGrp1='UATHAYAM DHOTIE' THEN t3.U_CatalgCode ELSE t0.ItemName END AS ProductName,
-            CASE WHEN t0.validFor='Y' THEN 1 ELSE 0 END AS ProductIsActive,
+            CASE WHEN T0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
             t0.U_SubGrp7 AS ProductGroupCode,
             t0.U_SubGrp7 AS ShortDesc,
             t0.ItemName AS DetailedDesc,
@@ -155,7 +155,7 @@ async function getPriceListData() {
                                         ON T0b.docentry = T2b.docentry
                                         AND T2b.u_selected = 'Y'
                         WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                                --AND T1b.u_subgroup7 in ('ULTIMATE')
+                                AND T1b.u_subgroup7 in ('IYYAPPA 3IN1 SET')
                                 AND T3b.u_mrp > 0
 					 ),
                     combined
@@ -203,7 +203,7 @@ async function getPriceListData() {
                                                         'ALLDAYS DHOTIE', 'ADD DHOTIE',
                                                     'ADD SHIRT', 'EVERYDAY SHIRTING',
                                                     'EVERYDAY RDY' )
-							--AND t0.u_subgrp7 in ('ULTIMATE')
+							AND t0.u_subgrp7 in ('IYYAPPA 3IN1 SET')
                             AND t0.validfor = 'Y'
                         UNION ALL
                         -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
@@ -247,7 +247,7 @@ async function getPriceListData() {
                                                     'EVERYDAY RDY'
                                                     )
                                 AND t0.validfor = 'Y'
-								--AND t0.u_subgrp7 in ('ULTIMATE')
+								AND t0.u_subgrp7 in ('IYYAPPA 3IN1 SET')
                                  ),
                     ranked
                     AS (SELECT *,
