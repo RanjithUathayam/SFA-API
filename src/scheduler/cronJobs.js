@@ -56,6 +56,8 @@ let checkOutRunning          = false;
 let ehrCheckInRunning        = false;
 let ehrCheckOutRunning       = false;
 let stockInventoryApiRunning = false;
+let productApiSyncRunning    = false;
+let priceListApiSyncRunning  = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stock inventory sync
@@ -153,6 +155,82 @@ async function runStockInventoryApiSync() {
     } finally {
         stockInventoryApiRunning = false;
         log.banner('STOCK INVENTORY API SYNC END');
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Product API sync — one item at a time, driven by AITM.U_SFATriggerStatus.
+// Calls syncController.syncNextTriggeredProduct directly (same mock req/res
+// adapter pattern as runStockInventoryApiSync) so the scheduled run and the
+// manual POST /api/sync/productTrigger endpoint share one implementation.
+// Only marks the AITM row 'Y' when the sync actually succeeds; otherwise the
+// item is left NULL/'N' so the next run retries it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runProductApiSync() {
+    if (productApiSyncRunning) {
+        log.warn('Product API sync already in progress — skipping this tick.');
+        return;
+    }
+    productApiSyncRunning = true;
+    const startTime = Date.now();
+    log.banner('PRODUCT API SYNC START');
+    log.info('Job: runProductApiSync → syncController.syncNextTriggeredProduct');
+
+    try {
+        const { mockReq, mockRes, promise } = buildMockContext();
+        syncController.syncNextTriggeredProduct(mockReq, mockRes);
+        const result = await promise;
+
+        if (result.statusCode >= 200 && result.statusCode < 300) {
+            log.ok(`Product API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+        } else {
+            log.error(`Product API Sync returned HTTP ${result.statusCode} — elapsed: ${elapsed(startTime)}`);
+        }
+        log.info(`  Response: ${JSON.stringify(result.data)}`);
+
+    } catch (err) {
+        log.error(`Product API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);
+        log.error(err.stack);
+    } finally {
+        productApiSyncRunning = false;
+        log.banner('PRODUCT API SYNC END');
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Price List API sync — calls syncController.syncPriceLists directly (same
+// mock req/res adapter pattern as runStockInventoryApiSync).
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runPriceListApiSync() {
+    if (priceListApiSyncRunning) {
+        log.warn('Price List API sync already in progress — skipping this tick.');
+        return;
+    }
+    priceListApiSyncRunning = true;
+    const startTime = Date.now();
+    log.banner('PRICE LIST API SYNC START');
+    log.info('Job: runPriceListApiSync → syncController.syncPriceLists');
+
+    try {
+        const { mockReq, mockRes, promise } = buildMockContext();
+        syncController.syncPriceLists(mockReq, mockRes);
+        const result = await promise;
+
+        if (result.statusCode >= 200 && result.statusCode < 300) {
+            log.ok(`Price List API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+        } else {
+            log.error(`Price List API Sync returned HTTP ${result.statusCode} — elapsed: ${elapsed(startTime)}`);
+        }
+        log.info(`  Response: ${JSON.stringify(result.data)}`);
+
+    } catch (err) {
+        log.error(`Price List API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);
+        log.error(err.stack);
+    } finally {
+        priceListApiSyncRunning = false;
+        log.banner('PRICE LIST API SYNC END');
     }
 }
 
@@ -503,7 +581,7 @@ function scheduleInterval(intervalMinutes, label, callback) {
 // ─────────────────────────────────────────────────────────────────────────────
 // startCronJobs — called once from index.js inside app.listen() callback
 // ─────────────────────────────────────────────────────────────────────────────
-
+runOutstandingSync()
 function startCronJobs() {
     log.banner('CRON SCHEDULER INITIALIZING');
 
@@ -533,6 +611,14 @@ function startCronJobs() {
 
     scheduleCron('0 */5 * * *', 'Stock Inventory Sync (every 5 hours)',
         async () => { await runStockInventoryApiSync(); }
+    );
+
+    scheduleDaily(0, 30, 'Product API Sync (12:30 AM IST)',
+        async () => { await runProductApiSync(); }
+    );
+
+    scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
+        async () => { await runPriceListApiSync(); }
     );
 
     scheduleDaily(5, 0, 'Attendance Check-Out Sync (5:0 AM IST)',
@@ -581,4 +667,4 @@ process.on('uncaughtException', (err) => {
     log.error(err.stack);
 });
 
-module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync };
+module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync };

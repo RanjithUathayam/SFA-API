@@ -701,12 +701,6 @@ async function upsertOutstanding(payload) {
     const token = await getSalesforceToken();
 
     let url = process.env.SF_API_URL_Outstanding;
-   
-    if (!url && process.env.SF_API_URL_ProductMaster) {
-        url = process.env.SF_API_URL_ProductMaster //.replace('ProductUpsertAPI', 'OutStndingAPI');
-        log.info(`Derived Outstanding URL: ${url}`);
-    }
-    url = buildSalesforceUrl(url, instanceUrl);
 
     if (!url) throw new Error('SF_API_URL_Outstanding is not set in .env');
 

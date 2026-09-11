@@ -67,6 +67,7 @@ app.get('/', (req, res, next) => {
 
 // ── Existing sync routes ───────────────────────────────────────────────────
 app.post('/api/sync/products',          syncController.syncProducts);
+app.post('/api/sync/productTrigger',    syncController.syncNextTriggeredProduct);
 app.post('/api/sync/pricelists',        syncController.syncPriceLists);
 app.post('/api/sync/images',            syncController.syncImages);
 app.post('/api/sync/schemes',           syncController.syncSchemes);
@@ -116,6 +117,7 @@ app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`Endpoints available:`);
     console.log(` - POST /api/sync/products`);
+    console.log(` - POST /api/sync/productTrigger`);
     console.log(` - POST /api/sync/pricelists`);
     console.log(` - POST /api/sync/images`);
     console.log(` - POST /api/sync/schemes`);

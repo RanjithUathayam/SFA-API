@@ -96,6 +96,7 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
             'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
             'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
         )
+        -- AND t0.U_SubGrp7 = 'VAIBHAV KIDS PNCH 3IN1 SET'
         ORDER BY t0.ItemCode
         OFFSET @offset ROWS
         FETCH NEXT @limit ROWS ONLY`
@@ -155,7 +156,7 @@ async function getPriceListData() {
                                         ON T0b.docentry = T2b.docentry
                                         AND T2b.u_selected = 'Y'
                         WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                                AND T1b.u_subgroup7 in ('IYYAPPA 3IN1 SET')
+                                AND T1b.u_subgroup7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
                                 AND T3b.u_mrp > 0
 					 ),
                     combined
@@ -203,7 +204,7 @@ async function getPriceListData() {
                                                         'ALLDAYS DHOTIE', 'ADD DHOTIE',
                                                     'ADD SHIRT', 'EVERYDAY SHIRTING',
                                                     'EVERYDAY RDY' )
-							AND t0.u_subgrp7 in ('IYYAPPA 3IN1 SET')
+							AND t0.u_subgrp7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
                             AND t0.validfor = 'Y'
                         UNION ALL
                         -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
@@ -247,7 +248,7 @@ async function getPriceListData() {
                                                     'EVERYDAY RDY'
                                                     )
                                 AND t0.validfor = 'Y'
-								AND t0.u_subgrp7 in ('IYYAPPA 3IN1 SET')
+								AND t0.u_subgrp7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
                                  ),
                     ranked
                     AS (SELECT *,
@@ -1340,6 +1341,36 @@ async function getProductDataByCodes(productCodes) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT SCHEDULER TRIGGER — AITM.U_SFATriggerStatus drives one-item-at-a-time
+// processing: NULL/'N' = pending, 'Y' = already synced.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getNextPendingProductTrigger() {
+    const pool = await getPool();
+
+    const result = await pool.request().query(`
+        SELECT TOP 1 ItemCode, ItemName
+        FROM AITM
+        WHERE U_SFATriggerStatus IS NULL
+           OR U_SFATriggerStatus = 'N'
+        ORDER BY ItemCode
+    `);
+
+    return result.recordset[0] || null;
+}
+
+async function markProductTriggerSynced(itemCode) {
+    const pool = await getPool();
+
+    await pool.request()
+        .input('ItemCode', sql.NVarChar(50), itemCode)
+        .query(`
+            UPDATE AITM
+            SET U_SFATriggerStatus = 'Y'
+            WHERE ItemCode = @ItemCode
+        `);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PRICE LISTS — paged list + full data by codes
 // ─────────────────────────────────────────────────────────────────────────────
 async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus, productGroup } = {}) {
@@ -2174,6 +2205,8 @@ module.exports = {
     getProductsPaged,
     getProductGroups,
     getProductDataByCodes,
+    getNextPendingProductTrigger,
+    markProductTriggerSynced,
     getPriceListData,
     getPriceListsPaged,
     getPriceListDataByCodes,
