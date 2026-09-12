@@ -449,6 +449,89 @@ exports.syncBusinessPartners = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/sync/businessPartnerTrigger
+//
+// One-CardCode-at-a-time Business Partner Scheduler:
+//   1. Pull the first ACRD row with U_SFATriggerStatus IS NULL OR = 'N'.
+//   2. Sync that single CardCode to Salesforce via syncBusinessPartners logic.
+//   3. Only on confirmed success, flip U_SFATriggerStatus to 'Y'.
+// If nothing succeeds, the trigger row is left untouched (NULL/'N') so the
+// next scheduler run retries the same Business Partner.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.syncNextTriggeredBusinessPartner = async (req, res) => {
+    const startTime = Date.now();
+    divider('BP TRIGGER SYNC START');
+
+    try {
+        const trigger = await dbService.getNextPendingBPTrigger();
+
+        if (!trigger) {
+            log.info('No pending ACRD trigger rows (U_SFATriggerStatus IS NULL/\'N\') — nothing to sync.');
+            divider();
+            return res.status(200).json({ message: 'No pending business partners to sync.' });
+        }
+
+        const { CardCode, CardName } = trigger;
+        log.info(`Pending business partner found : ${CardCode} (${CardName})`);
+
+        const rows = await dbService.getBPMasterDataByCodes([CardCode]);
+        if (!rows.length) {
+            log.warn(`CardCode ${CardCode} not found in BP master — leaving U_SFATriggerStatus untouched.`);
+            divider();
+            return res.status(200).json({
+                message : 'Business partner not found in master data — trigger left pending for retry.',
+                cardCode: CardCode
+            });
+        }
+
+        const payload  = mapper.mapToBPPayload(rows);
+        const totalBPs = payload.businessPartners.length;
+        if (totalBPs === 0) {
+            log.warn(`Mapper produced 0 BPs for ${CardCode} — leaving U_SFATriggerStatus untouched.`);
+            divider();
+            return res.status(200).json({
+                message : 'Mapper produced no payload — trigger left pending for retry.',
+                cardCode: CardCode
+            });
+        }
+
+        const sfResult  = await sfService.upsertBusinessPartners(payload);
+        const succeeded = sfResult.failedRecords === 0 && sfResult.successRecords > 0;
+
+        if (succeeded) {
+            await dbService.markBPTriggerSynced(CardCode);
+            log.ok(`CardCode ${CardCode} synced successfully — U_SFATriggerStatus set to 'Y'.`);
+        } else {
+            log.error(`CardCode ${CardCode} sync did not fully succeed — U_SFATriggerStatus left as-is for retry.`);
+        }
+
+        divider('BP TRIGGER SYNC COMPLETE');
+        log.ok(`Elapsed : ${elapsed(startTime)}`);
+        divider();
+
+        return res.status(succeeded ? 200 : 500).json({
+            message       : succeeded
+                ? 'Business Partner Trigger Sync Completed Successfully'
+                : 'Business Partner Trigger Sync Failed — item left pending for retry',
+            elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            cardCode      : CardCode,
+            cardName      : CardName,
+            ...sfResult
+        });
+
+    } catch (err) {
+        divider('BP TRIGGER SYNC ERROR');
+        log.error(`Sync failed after ${elapsed(startTime)}: ${err.message}`);
+        divider();
+        return res.status(500).json({
+            message       : 'Business Partner Trigger Sync Failed',
+            elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            error         : err.message
+        });
+    }
+};
+
 exports.syncStockInventory = async (req, res) => {
     const startTime = Date.now();
     divider('STOCK INVENTORY SYNC START');

@@ -156,7 +156,7 @@ async function getPriceListData() {
                                         ON T0b.docentry = T2b.docentry
                                         AND T2b.u_selected = 'Y'
                         WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                                AND T1b.u_subgroup7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
+                               -- AND T1b.u_subgroup7 in ('MAJESTIC')
                                 AND T3b.u_mrp > 0
 					 ),
                     combined
@@ -204,7 +204,7 @@ async function getPriceListData() {
                                                         'ALLDAYS DHOTIE', 'ADD DHOTIE',
                                                     'ADD SHIRT', 'EVERYDAY SHIRTING',
                                                     'EVERYDAY RDY' )
-							AND t0.u_subgrp7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
+							--AND t0.u_subgrp7 in ('MAJESTIC')
                             AND t0.validfor = 'Y'
                         UNION ALL
                         -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
@@ -248,7 +248,7 @@ async function getPriceListData() {
                                                     'EVERYDAY RDY'
                                                     )
                                 AND t0.validfor = 'Y'
-								AND t0.u_subgrp7 in ('VAIBHAV KIDS PNCH 3IN1 SET')
+								--AND t0.u_subgrp7 in ('MAJESTIC')
                                  ),
                     ranked
                     AS (SELECT *,
@@ -1592,6 +1592,36 @@ async function getBPMasterDataByCodes(cardCodes) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BUSINESS PARTNER SCHEDULER TRIGGER — ACRD.U_SFATriggerStatus drives
+// one-CardCode-at-a-time processing: NULL/'N' = pending, 'Y' = already synced.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getNextPendingBPTrigger() {
+    const pool = await getPool();
+
+    const result = await pool.request().query(`
+        SELECT TOP 1 CardCode, CardName
+        FROM ACRD
+        WHERE U_SFATriggerStatus IS NULL
+           OR U_SFATriggerStatus = 'N'
+        ORDER BY CardCode
+    `);
+
+    return result.recordset[0] || null;
+}
+
+async function markBPTriggerSynced(cardCode) {
+    const pool = await getPool();
+
+    await pool.request()
+        .input('CardCode', sql.NVarChar(50), cardCode)
+        .query(`
+            UPDATE ACRD
+            SET U_SFATriggerStatus = 'Y'
+            WHERE CardCode = @CardCode
+        `);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SCHEMES — paged list + full data by DocEntry codes
 // ─────────────────────────────────────────────────────────────────────────────
 async function getSchemesPaged({ page = 1, limit = 50, search, pushStatus } = {}) {
@@ -2217,6 +2247,8 @@ module.exports = {
     getBPMasterData,
     getBPListPaged,
     getBPMasterDataByCodes,
+    getNextPendingBPTrigger,
+    markBPTriggerSynced,
     getStockData,
     getStockPaged,
     getStockDataByCodes,

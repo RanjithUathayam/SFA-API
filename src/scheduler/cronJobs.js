@@ -58,6 +58,7 @@ let ehrCheckOutRunning       = false;
 let stockInventoryApiRunning = false;
 let productApiSyncRunning    = false;
 let priceListApiSyncRunning  = false;
+let bpApiSyncRunning         = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stock inventory sync
@@ -231,6 +232,37 @@ async function runPriceListApiSync() {
     } finally {
         priceListApiSyncRunning = false;
         log.banner('PRICE LIST API SYNC END');
+    }
+}
+
+async function runBusinessPartnerApiSync() {
+    if (bpApiSyncRunning) {
+        log.warn('Business Partner API sync already in progress — skipping this tick.');
+        return;
+    }
+    bpApiSyncRunning = true;
+    const startTime = Date.now();
+    log.banner('BUSINESS PARTNER API SYNC START');
+    log.info('Job: runBusinessPartnerApiSync → syncController.syncNextTriggeredBusinessPartner');
+
+    try {
+        const { mockReq, mockRes, promise } = buildMockContext();
+        syncController.syncNextTriggeredBusinessPartner(mockReq, mockRes);
+        const result = await promise;
+
+        if (result.statusCode >= 200 && result.statusCode < 300) {
+            log.ok(`Business Partner API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+        } else {
+            log.error(`Business Partner API Sync returned HTTP ${result.statusCode} — elapsed: ${elapsed(startTime)}`);
+        }
+        log.info(`  Response: ${JSON.stringify(result.data)}`);
+
+    } catch (err) {
+        log.error(`Business Partner API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);
+        log.error(err.stack);
+    } finally {
+        bpApiSyncRunning = false;
+        log.banner('BUSINESS PARTNER API SYNC END');
     }
 }
 
@@ -581,7 +613,7 @@ function scheduleInterval(intervalMinutes, label, callback) {
 // ─────────────────────────────────────────────────────────────────────────────
 // startCronJobs — called once from index.js inside app.listen() callback
 // ─────────────────────────────────────────────────────────────────────────────
-runOutstandingSync()
+
 function startCronJobs() {
     log.banner('CRON SCHEDULER INITIALIZING');
 
@@ -619,6 +651,10 @@ function startCronJobs() {
 
     scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
         async () => { await runPriceListApiSync(); }
+    );
+
+    scheduleDaily(2, 0, 'Business Partner API Sync (02:00 AM IST)',
+        async () => { await runBusinessPartnerApiSync(); }
     );
 
     scheduleDaily(5, 0, 'Attendance Check-Out Sync (5:0 AM IST)',
@@ -667,4 +703,4 @@ process.on('uncaughtException', (err) => {
     log.error(err.stack);
 });
 
-module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync };
+module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync, runBusinessPartnerApiSync };
