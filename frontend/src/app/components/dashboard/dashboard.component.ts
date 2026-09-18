@@ -26,8 +26,8 @@ export class DashboardComponent {
     {
       icon: '💰',
       title: 'Price Lists',
-      desc: 'Manage pricing by state and brand, track which price records have been pushed.',
-      link: '/master/pricelists',
+      desc: 'State-wise dealer pricing per product, sourced directly from SAP — search, filter, and push to Salesforce.',
+      link: '/pricelist',
     },
     {
       icon: '👥',
@@ -58,6 +58,12 @@ export class DashboardComponent {
       title: 'E-HR Attendance',
       desc: 'Monitor attendance punch logs and manually trigger SF→DB sync and DB→EHR API push.',
       link: '/ehr',
+    },
+    {
+      icon: '🔄',
+      title: 'Sync Center',
+      desc: 'Trigger bulk Salesforce sync for products, price lists, images, schemes, BPs, stock and outstanding — sync all or select specific records.',
+      link: '/sync',
     },
   ];
 }

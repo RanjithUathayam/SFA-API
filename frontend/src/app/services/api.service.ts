@@ -34,6 +34,18 @@ export class ApiService {
     return this.http.post(`/api/master/${type}/push-all`, filters);
   }
 
+  runSync(type: string, codes?: string[]): Observable<any> {
+    return this.http.post(`/api/sync/${type}`, codes && codes.length ? { codes } : {});
+  }
+
+  getPriceListRows(params: Record<string, any>): Observable<any> {
+    return this.http.get('/api/pricelist/rows', { params: this.toHttpParams(params) });
+  }
+
+  getPriceListStates(): Observable<any> {
+    return this.http.get('/api/pricelist/states');
+  }
+
   getEhrLogs(params: Record<string, any>): Observable<any> {
     return this.http.get('/api/ehr/logs', { params: this.toHttpParams(params) });
   }

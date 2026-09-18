@@ -27,7 +27,9 @@ const log = {
 exports.syncProducts = async (req, res) => {
     const startTime = Date.now();
     divider('PRODUCT SYNC START');
-    log.info(`Last sync timestamp : ${lastProductSync.toISOString()}`);
+
+    const codes    = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean) : [];
+    const selective = codes.length > 0;
 
     let offset = 0;
     const PAGE_SIZE = parseInt(process.env.DB_PAGE_SIZE, 10) || 500;
@@ -42,38 +44,61 @@ exports.syncProducts = async (req, res) => {
     };
 
     try {
-        while (true) {
-            summary.pages++;
-            log.info(`── Page ${summary.pages} | DB offset: ${offset} | limit: ${PAGE_SIZE}`);
+        if (selective) {
+            log.info(`Selective sync requested for ${codes.length} product code(s)`);
+            summary.pages = 1;
 
-            const rows = await dbService.getProductData(lastProductSync, offset, PAGE_SIZE);
-
-            if (rows.length === 0) {
-                log.info(`No more rows at offset ${offset}. Pagination complete.`);
-                break;
-            }
-
-            summary.totalDbRows += rows.length;
-            log.info(`Fetched ${rows.length} DB row(s) (running total: ${summary.totalDbRows})`);
+            const rows = await dbService.getProductDataByCodes(codes);
+            summary.totalDbRows = rows.length;
+            log.info(`Fetched ${rows.length} DB row(s) for ${codes.length} requested code(s)`);
 
             const payload = mapper.mapToSalesforcePayload(rows);
-            summary.totalMapped += payload.length;
-            log.info(`Mapped to ${payload.length} product payload(s) (running total: ${summary.totalMapped})`);
+            summary.totalMapped = payload.length;
+            log.info(`Mapped to ${payload.length} product payload(s)`);
 
             if (payload.length > 0) {
                 const results = await sfService.upsertProducts(payload);
-                summary.totalSuccess += results.success.length;
-                summary.totalFailed  += results.failed.length;
+                summary.totalSuccess = results.success.length;
+                summary.totalFailed  = results.failed.length;
                 if (results.failed.length > 0) {
                     summary.failedProducts.push(...results.failed.map(f => f.code));
                 }
             }
+        } else {
+            log.info(`Last sync timestamp : ${lastProductSync.toISOString()}`);
+            while (true) {
+                summary.pages++;
+                log.info(`── Page ${summary.pages} | DB offset: ${offset} | limit: ${PAGE_SIZE}`);
 
-            if (rows.length < PAGE_SIZE) break;
-            offset += PAGE_SIZE;
+                const rows = await dbService.getProductData(lastProductSync, offset, PAGE_SIZE);
+
+                if (rows.length === 0) {
+                    log.info(`No more rows at offset ${offset}. Pagination complete.`);
+                    break;
+                }
+
+                summary.totalDbRows += rows.length;
+                log.info(`Fetched ${rows.length} DB row(s) (running total: ${summary.totalDbRows})`);
+
+                const payload = mapper.mapToSalesforcePayload(rows);
+                summary.totalMapped += payload.length;
+                log.info(`Mapped to ${payload.length} product payload(s) (running total: ${summary.totalMapped})`);
+
+                if (payload.length > 0) {
+                    const results = await sfService.upsertProducts(payload);
+                    summary.totalSuccess += results.success.length;
+                    summary.totalFailed  += results.failed.length;
+                    if (results.failed.length > 0) {
+                        summary.failedProducts.push(...results.failed.map(f => f.code));
+                    }
+                }
+
+                if (rows.length < PAGE_SIZE) break;
+                offset += PAGE_SIZE;
+            }
+
+            lastProductSync = new Date();
         }
-
-        lastProductSync = new Date();
 
         divider('PRODUCT SYNC COMPLETE');
         log.ok (`Elapsed          : ${elapsed(startTime)}`);
@@ -91,6 +116,8 @@ exports.syncProducts = async (req, res) => {
                 ? 'Product Sync Completed Successfully'
                 : 'Product Sync Completed with some failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             pages         : summary.pages,
             totalDbRows   : summary.totalDbRows,
             totalMapped   : summary.totalMapped,
@@ -201,9 +228,16 @@ exports.syncPriceLists = async (req, res) => {
     const startTime = Date.now();
     divider('PRICELIST SYNC START');
 
+    const codes     = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean) : [];
+    const selective = codes.length > 0;
+
     try {
-        log.info('Fetching price list data from DB…');
-        const sqlData = await dbService.getPriceListData();
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} product code(s)`
+            : 'Fetching price list data from DB…');
+        const sqlData = selective
+            ? await dbService.getPriceListDataByCodes(codes)
+            : await dbService.getPriceListData();
 
         if (!sqlData.length) {
             log.warn('No price data found in DB.');
@@ -233,6 +267,8 @@ exports.syncPriceLists = async (req, res) => {
                 ? 'PriceList Sync Completed Successfully'
                 : 'PriceList Sync Completed with some batch failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             dbRowsFetched : sqlData.length,
             recordsSent   : payload.length,
             ...sfResult
@@ -312,9 +348,16 @@ exports.syncSchemes = async (req, res) => {
     const startTime = Date.now();
     divider('SCHEME SYNC START');
 
+    const codes     = Array.isArray(req.body?.codes) ? req.body.codes.filter(v => v !== null && v !== undefined && v !== '') : [];
+    const selective = codes.length > 0;
+
     try {
-        log.info('Fetching scheme data from DB…');
-        const sqlData = await dbService.getSchemeData();
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} scheme DocEntry(ies)`
+            : 'Fetching scheme data from DB…');
+        const sqlData = selective
+            ? await dbService.getSchemeDataByCodes(codes)
+            : await dbService.getSchemeData();
         log.info(`Fetched ${sqlData.length} raw DB row(s)`);
 
         if (!sqlData.length) {
@@ -356,6 +399,8 @@ exports.syncSchemes = async (req, res) => {
                 ? 'Scheme Sync Completed Successfully'
                 : 'Scheme Sync Completed with some failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             dbRowsFetched : sqlData.length,
             schemesMapped : payload.length,
             ...sfResult
@@ -386,9 +431,16 @@ exports.syncBusinessPartners = async (req, res) => {
     const startTime = Date.now();
     divider('BP SYNC START');
 
+    const codes     = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean) : [];
+    const selective = codes.length > 0;
+
     try {
-        log.info('Fetching BP master data from DB…');
-        const sqlData = await dbService.getBPMasterData();
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} BP code(s)`
+            : 'Fetching BP master data from DB…');
+        const sqlData = selective
+            ? await dbService.getBPMasterDataByCodes(codes)
+            : await dbService.getBPMasterData();
         log.info(`Fetched ${sqlData.length} raw DB row(s) across all sub-brand passes`);
 
         if (!sqlData.length) {
@@ -431,6 +483,8 @@ exports.syncBusinessPartners = async (req, res) => {
                 ? 'Business Partner Sync Completed Successfully'
                 : 'Business Partner Sync Completed with some failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             dbRowsFetched : sqlData.length,
             bpsMapped     : totalBPs,
             ...sfResult
@@ -535,10 +589,17 @@ exports.syncNextTriggeredBusinessPartner = async (req, res) => {
 exports.syncStockInventory = async (req, res) => {
     const startTime = Date.now();
     divider('STOCK INVENTORY SYNC START');
- 
+
+    const codes     = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean) : [];
+    const selective = codes.length > 0;
+
     try {
-        log.info('Fetching stock data from DB…');
-        const sqlData = await dbService.getStockData();
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} item code(s)`
+            : 'Fetching stock data from DB…');
+        const sqlData = selective
+            ? await dbService.getStockDataByCodes(codes)
+            : await dbService.getStockData();
         log.info(`Fetched ${sqlData.length} raw DB row(s)`);
  
         if (!sqlData.length) {
@@ -580,6 +641,8 @@ exports.syncStockInventory = async (req, res) => {
                 ? 'Stock Inventory Sync Completed Successfully'
                 : 'Stock Inventory Sync Completed with some failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             dbRowsFetched : sqlData.length,
             ...sfResult
         });
@@ -601,9 +664,16 @@ exports.syncOutstanding = async (req, res) => {
     const startTime = Date.now();
     divider('OUTSTANDING SYNC START');
 
+    const codes     = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean) : [];
+    const selective = codes.length > 0;
+
     try {
-        log.info('Fetching outstanding data from DB...');
-        const sqlData = await dbService.getOutstandingData();
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} BP code(s)`
+            : 'Fetching outstanding data from DB...');
+        const sqlData = selective
+            ? await dbService.getOutstandingDataByCodes(codes)
+            : await dbService.getOutstandingData();
         log.info(`Fetched ${sqlData.length} raw DB row(s)`);
 
         if (!sqlData.length) {
@@ -643,6 +713,8 @@ exports.syncOutstanding = async (req, res) => {
                 ? 'Outstanding Sync Completed Successfully'
                 : 'Outstanding Sync Completed with some failures',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : {}),
             dbRowsFetched : sqlData.length,
             ...sfResult
         });

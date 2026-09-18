@@ -1372,7 +1372,74 @@ async function markProductTriggerSynced(itemCode) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRICE LISTS — paged list + full data by codes
+//
+// Shares the same two-source, priority-ranked pricing logic as getPriceListData()
+// above (size-level @INS_OPLSN preferred, item-level @INS_PLM2/OPLM/PLM1 as
+// fallback, locked/zero-MRP rows excluded) so the grid and single/selected-record
+// sync paths never disagree with the full "Sync All" price. getPriceListData()
+// itself is left untouched to avoid any risk to that already-working path.
 // ─────────────────────────────────────────────────────────────────────────────
+const PRICE_EXCLUDED_BRANDS = `'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+    'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+    'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
+    'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'`;
+
+function buildRankedPriceCte(itemCodeFilter = '') {
+    return `
+        WITH itempriced AS (
+            SELECT T1.u_itemcode, T0.docentry, T2.u_brand, T0.u_state, T0.u_selprice, T0.u_mrp, T2.u_lock, T0.lineid, T2.u_catalgcode
+            FROM [BBLive].[dbo].[@ins_plm2] T0
+            INNER JOIN [BBLive].[dbo].[@ins_oplm] T1 ON T0.docentry = T1.docentry
+            INNER JOIN [BBLive].[dbo].[@ins_plm1] T2 ON T0.docentry = T2.docentry AND T2.lineid = T0.u_rowid
+            WHERE T2.u_lock = 'N' AND T0.u_mrp > 0
+            ${itemCodeFilter ? `AND T1.u_itemcode ${itemCodeFilter}` : ''}
+        ),
+        sizepriced AS (
+            SELECT T1b.u_subgroup1, T1b.u_subgroup7, T1b.u_subgroup4, T3b.u_size, T0b.docentry,
+                   T1b.U_SubGroup1 AS U_Brand, CAST(T2b.u_code AS VARCHAR(50)) AS U_State,
+                   T3b.u_selprice, T3b.u_mrp, 'N' AS U_Lock, T1b.lineid, CAST(NULL AS VARCHAR(50)) AS U_CatalgCode
+            FROM [BBLive].[dbo].[@ins_oplsn] T0b WITH (nolock)
+            INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b WITH (nolock) ON T0b.docentry = T1b.docentry
+            INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b WITH (nolock) ON T0b.docentry = T3b.docentry AND T1b.lineid = T3b.u_uniqid
+            INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b WITH (nolock) ON T0b.docentry = T2b.docentry AND T2b.u_selected = 'Y'
+            WHERE GETDATE() BETWEEN T0b.u_validfrom AND T0b.u_validto AND T3b.u_mrp > 0
+        ),
+        combined AS (
+            SELECT t0.itemcode AS ProductCode, B.docentry AS PriceListID, B.u_state AS SubBrandCode,
+                   CASE WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode ELSE t0.itemname END AS BPProductName,
+                   t0.itemname AS ProductName,
+                   B.u_state AS PriceListCode, NULL AS EffectiveFrom, NULL AS EffectiveTo,
+                   CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceListIsActive, 'Dealer' AS BPCategory,
+                   B.u_selprice AS Price, B.u_mrp AS MRP, B.lineid AS PriceID,
+                   CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceIsActive,
+                   t0.u_subgrp7 AS ProductGroupCode, t0.u_subgrp1 AS Brand, 1 AS SourcePriority
+            FROM [BBLive].[dbo].oitm t0
+            INNER JOIN sizepriced B
+                ON B.u_subgroup7 = t0.u_subgrp7 AND B.u_subgroup4 = t0.u_subgrp4
+                   AND B.u_subgroup1 = t0.u_subgrp1 AND B.u_size = t0.u_subgrp5
+            WHERE B.u_selprice > 0 AND B.u_brand NOT IN (${PRICE_EXCLUDED_BRANDS}) AND t0.validfor = 'Y'
+            ${itemCodeFilter ? `AND t0.itemcode ${itemCodeFilter}` : ''}
+            UNION ALL
+            SELECT t0.itemcode, B.docentry, B.u_state,
+                   CASE WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode ELSE t0.itemname END,
+                   t0.itemname,
+                   B.u_state, NULL, NULL,
+                   CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END, 'Dealer',
+                   B.u_selprice, B.u_mrp, B.lineid,
+                   CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END,
+                   t0.u_subgrp7, t0.u_subgrp1, 2
+            FROM [BBLive].[dbo].oitm t0
+            INNER JOIN itempriced B ON B.u_itemcode = t0.itemcode
+            WHERE B.u_selprice > 0 AND B.u_brand NOT IN (${PRICE_EXCLUDED_BRANDS}) AND t0.validfor = 'Y'
+            ${itemCodeFilter ? `AND t0.itemcode ${itemCodeFilter}` : ''}
+        ),
+        ranked AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY ProductCode, SubBrandCode ORDER BY SourcePriority) AS rn
+            FROM combined
+        )
+    `;
+}
+
 async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus, productGroup } = {}) {
     const pool       = await getPool();
     const offset     = (page - 1) * limit;
@@ -1380,32 +1447,21 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus, pr
     const statusVal  = pushStatus   || null;
     const groupVal   = productGroup || null;
 
-    const EXCLUDED_BRANDS = `'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
-        'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
-        'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
-        'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'`;
-
     const dataQuery = `
-        WITH PriceSummary AS (
+        ${buildRankedPriceCte()}
+        , PriceSummary AS (
             SELECT
-                t0.ItemCode  AS ProductCode,
-                t0.ItemName  AS ProductName,
-                B.U_Brand    AS Brand,
-                t0.U_SubGrp7 AS ProductGroupCode,
-                COUNT(*)                  AS PriceEntries,
-                COUNT(DISTINCT B.U_State) AS StateCount,
-                MIN(B.U_SelPrice)         AS MinPrice,
-                MAX(B.U_SelPrice)         AS MaxPrice
-            FROM [BBLive].[dbo].OITM t0
-            JOIN (
-                SELECT T0.DocEntry, T2.U_Brand, T1.U_ItemCode,
-                       T0.U_State, T0.U_SelPrice, T0.U_MRP, T2.U_Lock, T0.LineId
-                FROM [BBLive].[dbo].[@INS_PLM2] T0
-                INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T0.DocEntry = T1.DocEntry
-                INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T0.DocEntry = T2.DocEntry
-            ) B ON B.U_ItemCode = t0.ItemCode
-            WHERE B.U_SelPrice > 0 AND B.U_Brand NOT IN (${EXCLUDED_BRANDS})
-            GROUP BY t0.ItemCode, t0.ItemName, B.U_Brand, t0.U_SubGrp7
+                ProductCode,
+                MAX(ProductName)      AS ProductName,
+                MAX(Brand)            AS Brand,
+                MAX(ProductGroupCode) AS ProductGroupCode,
+                COUNT(*)                    AS PriceEntries,
+                COUNT(DISTINCT SubBrandCode) AS StateCount,
+                MIN(Price)             AS MinPrice,
+                MAX(Price)             AS MaxPrice
+            FROM ranked
+            WHERE rn = 1
+            GROUP BY ProductCode
         )
         SELECT
             COUNT(*) OVER()                        AS TotalCount,
@@ -1425,20 +1481,13 @@ async function getPriceListsPaged({ page = 1, limit = 50, search, pushStatus, pr
     `;
 
     const summaryQuery = `
+        ${buildRankedPriceCte()}
         SELECT ISNULL(rp.PushStatus, 'Pending') AS PushStatus, COUNT(*) AS Count
         FROM (
-            SELECT DISTINCT t0.ItemCode
-            FROM [BBLive].[dbo].OITM t0
-            JOIN (
-                SELECT T2.U_Brand, T1.U_ItemCode, T0.U_SelPrice
-                FROM [BBLive].[dbo].[@INS_PLM2] T0
-                INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T0.DocEntry = T1.DocEntry
-                INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T0.DocEntry = T2.DocEntry
-            ) B ON B.U_ItemCode = t0.ItemCode
-            WHERE B.U_SelPrice > 0 AND B.U_Brand NOT IN (${EXCLUDED_BRANDS})
+            SELECT DISTINCT ProductCode FROM ranked WHERE rn = 1
         ) base
         LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
-            ON rp.MasterType = 'pricelists' AND rp.RecordKey = base.ItemCode
+            ON rp.MasterType = 'pricelists' AND rp.RecordKey = base.ProductCode
         GROUP BY ISNULL(rp.PushStatus, 'Pending')
     `;
 
@@ -1473,40 +1522,102 @@ async function getPriceListDataByCodes(productCodes) {
     const placeholders = productCodes.map((c, i) => { req.input(`c${i}`, sql.NVarChar(50), c); return `@c${i}`; }).join(',');
 
     const query = `
+        ${buildRankedPriceCte(`IN (${placeholders})`)}
         SELECT
-            t0.ItemCode                                         AS ProductCode,
-            B.DocEntry                                          AS PriceListID,
-            B.U_Brand                                           AS SubBrandCode,
-            t0.ItemCode                                         AS BPProductName,
-            B.U_State                                           AS PriceListCode,
-            NULL                                                AS EffectiveFrom,
-            NULL                                                AS EffectiveTo,
-            CASE WHEN B.U_Lock = 'Y' THEN 0 ELSE 1 END         AS PriceListIsActive,
-            'Dealer'                                            AS BPCategory,
-            B.U_SelPrice                                        AS Price,
-            B.U_MRP                                             AS MRP,
-            B.LineId                                            AS PriceID,
-            CASE WHEN B.U_Lock = 'Y' THEN 0 ELSE 1 END         AS PriceIsActive
-        FROM [BBLive].[dbo].OITM t0
-        LEFT JOIN (
-            SELECT T0.DocEntry, T2.U_Brand, T1.U_ItemCode, T0.U_State,
-                   T0.U_SelPrice, T0.U_MRP, T2.U_Lock, T0.LineId
-            FROM [BBLive].[dbo].[@INS_PLM2] T0
-            INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T0.DocEntry = T1.DocEntry
-            INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T0.DocEntry = T2.DocEntry
-        ) B ON B.U_ItemCode = t0.ItemCode
-        WHERE B.U_SelPrice > 0
-          AND B.U_Brand NOT IN (
-              'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
-              'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
-              'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
-              'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
-          )
-          AND t0.ItemCode IN (${placeholders})
-        ORDER BY t0.ItemCode
+            ProductCode, PriceListID, SubBrandCode, BPProductName, PriceListCode,
+            EffectiveFrom, EffectiveTo, PriceListIsActive, BPCategory, Price, MRP, PriceID, PriceIsActive
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY ProductCode, SubBrandCode
     `;
     const result = await req.query(query);
     return result.recordset;
+}
+
+const PRICE_SORT_COLUMNS = {
+    ProductCode: 'ProductCode',
+    ProductName: 'ProductName',
+    Price:       'Price',
+    MRP:         'MRP',
+    SubBrandCode: 'SubBrandCode',
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRICE LISTS — row-level paged listing (one row per ProductCode+SubBrandCode),
+// for the dedicated Price List screen. Uses the same corrected/ranked source as
+// getPriceListData()/getPriceListDataByCodes() above — never aggregated.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getPriceListRowsPaged({
+    page = 1, limit = 50, search, productGroup, subBrand, activeOnly, sortBy, sortDir,
+} = {}) {
+    const pool       = await getPool();
+    const offset     = (page - 1) * limit;
+    const searchVal  = search       ? `%${search}%` : null;
+    const groupVal   = productGroup || null;
+    const subBrandVal = subBrand    || null;
+
+    const orderCol = PRICE_SORT_COLUMNS[sortBy] || 'ProductCode';
+    const orderDir = String(sortDir).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
+    const query = `
+        ${buildRankedPriceCte()}
+        SELECT
+            COUNT(*) OVER()        AS TotalCount,
+            r.ProductCode, r.ProductName, r.Brand, r.ProductGroupCode,
+            r.PriceListID, r.SubBrandCode, r.PriceListCode, r.BPProductName,
+            r.Price, r.MRP, r.PriceID, r.PriceListIsActive, r.PriceIsActive,
+            ISNULL(rp.PushStatus, 'Pending') AS PushStatus,
+            rp.LastPushedAt,
+            rp.ErrorMessage                  AS PushError
+        FROM ranked r
+        LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
+            ON rp.MasterType = 'pricelists' AND rp.RecordKey = r.ProductCode
+        WHERE r.rn = 1
+          AND (@search IS NULL OR r.ProductCode LIKE @search OR r.ProductName LIKE @search OR r.Brand LIKE @search)
+          AND (@productGroup IS NULL OR r.ProductGroupCode = @productGroup)
+          AND (@subBrand IS NULL OR r.SubBrandCode = @subBrand)
+          ${activeOnly ? 'AND r.PriceListIsActive = 1' : ''}
+        ORDER BY r.${orderCol} ${orderDir}, r.SubBrandCode ASC
+        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `;
+
+    const { recordset } = await pool.request()
+        .input('search',       sql.NVarChar(200), searchVal)
+        .input('productGroup', sql.NVarChar(50),  groupVal)
+        .input('subBrand',     sql.NVarChar(50),  subBrandVal)
+        .input('offset',       sql.Int,           offset)
+        .input('limit',        sql.Int,           limit)
+        .query(query);
+
+    const total = recordset.length > 0 ? recordset[0].TotalCount : 0;
+    return {
+        data:       recordset.map(({ TotalCount, ...rest }) => rest),
+        total, page, limit,
+        totalPages: Math.ceil(total / limit),
+    };
+}
+
+// Lightweight — distinct state codes only, deliberately NOT routed through the
+// full ranked-price CTE (that computes pricing for the whole catalog, which is
+// wasteful and was observed to get the DB session killed when run back-to-back
+// with another full-catalog query for what is just a ~30-value dropdown list).
+async function getPriceListStates() {
+    const pool = await getPool();
+    const query = `
+        SELECT DISTINCT state FROM (
+            SELECT CAST(u_code AS VARCHAR(50)) AS state
+            FROM [BBLive].[dbo].[@ins_plsn2] WITH (nolock)
+            WHERE u_selected = 'Y'
+            UNION
+            SELECT u_state AS state
+            FROM [BBLive].[dbo].[@ins_plm2] WITH (nolock)
+            WHERE u_state IS NOT NULL AND u_state <> ''
+        ) x
+        WHERE state IS NOT NULL AND state <> ''
+        ORDER BY state
+    `;
+    const { recordset } = await pool.request().query(query);
+    return recordset.map(r => r.state);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2235,6 +2346,8 @@ module.exports = {
     getProductsPaged,
     getProductGroups,
     getProductDataByCodes,
+    getPriceListRowsPaged,
+    getPriceListStates,
     getNextPendingProductTrigger,
     markProductTriggerSynced,
     getPriceListData,

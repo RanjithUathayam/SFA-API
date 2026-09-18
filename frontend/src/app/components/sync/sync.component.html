@@ -1,0 +1,162 @@
+<div class="hero">
+  <h1>&#128260; Sync Center</h1>
+  <p>Trigger bulk synchronization to Salesforce, or select specific records to sync.</p>
+</div>
+
+<div class="grid">
+  @for (cfg of cards; track cfg.key) {
+    <div class="sync-card">
+      <div class="sc-head">
+        <div class="sc-icon">{{ cfg.icon }}</div>
+        <div>
+          <div class="sc-title">{{ cfg.title }}</div>
+          <div class="sc-desc">{{ cfg.desc }}</div>
+        </div>
+      </div>
+
+      <div class="sc-note">{{ cfg.cronNote }}</div>
+
+      <div class="sc-actions">
+        <button class="btn btn-primary" [disabled]="syncing[cfg.key]" (click)="syncAll(cfg)">
+          @if (syncing[cfg.key]) { &#9203; Syncing&#8230; } @else { &#8635; Sync All }
+        </button>
+        @if (cfg.supportsSelection) {
+          <button class="btn btn-outline" [disabled]="syncing[cfg.key]" (click)="openPicker(cfg)">
+            &#9776; Select &amp; Sync&#8230;
+          </button>
+        }
+      </div>
+
+      @if (results[cfg.key]; as r) {
+        <div class="sc-result" [class.ok]="r.ok" [class.warn]="!r.ok && r.failed > 0" [class.err]="!r.ok && r.failed === 0 && r.errorDetail">
+          <div class="sc-result-msg">{{ r.message }}</div>
+
+          @if (!r.isEmpty) {
+            <div class="sc-stats">
+              @if (r.requestedCount !== undefined) {
+                <div class="sc-stat"><span class="v">{{ r.requestedCount }}</span><span class="l">Requested</span></div>
+              }
+              @if (r.fetched !== undefined) {
+                <div class="sc-stat"><span class="v">{{ r.fetched }}</span><span class="l">Fetched</span></div>
+              }
+              <div class="sc-stat success"><span class="v">{{ r.success }}</span><span class="l">Success</span></div>
+              <div class="sc-stat failed"><span class="v">{{ r.failed }}</span><span class="l">Failed</span></div>
+              @if (r.elapsedSeconds !== undefined) {
+                <div class="sc-stat"><span class="v">{{ r.elapsedSeconds }}s</span><span class="l">Elapsed</span></div>
+              }
+            </div>
+          }
+
+          @if (r.errorDetail) {
+            <div class="sc-error-detail">{{ r.errorDetail | json }}</div>
+          }
+
+          @if (r.failedList.length > 0) {
+            <button class="sc-toggle-failures" (click)="toggleFailures(cfg.key)">
+              {{ expandedFailures[cfg.key] ? 'Hide' : 'Show' }} {{ r.failedList.length }} failed record(s)
+            </button>
+            @if (expandedFailures[cfg.key]) {
+              <ul class="sc-failed-list">
+                @for (f of r.failedList; track f) { <li>{{ f }}</li> }
+              </ul>
+            }
+          }
+        </div>
+      }
+    </div>
+  }
+</div>
+
+<!-- Picker Modal -->
+@if (pickerOpen && pickerCfg) {
+  <div class="modal-overlay" (click)="closePicker()">
+    <div class="modal-panel" (click)="$event.stopPropagation()">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title">{{ pickerCfg.icon }} Select {{ pickerCfg.title }} to Sync</div>
+          <div class="modal-sub">{{ pickerSelected.size }} record(s) selected</div>
+        </div>
+        <button class="modal-close" (click)="closePicker()">&#10005;</button>
+      </div>
+
+      <div class="modal-toolbar">
+        <input type="text" [(ngModel)]="pickerSearch" (input)="onPickerSearchInput()" placeholder="Search&#8230;" />
+        @if (pickerCfg.hasDivisionFilter) {
+          <select [(ngModel)]="pickerDivision" (change)="onPickerFilterChange()">
+            <option value="">All Divisions</option>
+            <option value="ARISER">ARISER</option>
+            <option value="UATHAYAM">UATHAYAM</option>
+          </select>
+        }
+        @if (pickerCfg.hasProductGroupFilter) {
+          <select [(ngModel)]="pickerGroup" (change)="onPickerFilterChange()">
+            <option value="">All Product Groups</option>
+            @for (g of pickerGroups; track g) { <option [value]="g">{{ g }}</option> }
+          </select>
+        }
+      </div>
+
+      <div class="modal-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:36px">
+                <input type="checkbox" [checked]="isPickerPageFullySelected()"
+                  (change)="togglePickerSelectAll($any($event.target).checked)" />
+              </th>
+              @for (col of pickerCfg.columns; track col.key) {
+                <th [class.align-right]="col.align === 'right'">{{ col.label }}</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @if (pickerLoading && pickerRows.length === 0) {
+              <tr><td [attr.colspan]="(pickerCfg.columns?.length || 0) + 1">
+                <div class="empty-state">Loading&#8230;</div>
+              </td></tr>
+            }
+            @if (!pickerLoading && pickerRows.length === 0) {
+              <tr><td [attr.colspan]="(pickerCfg.columns?.length || 0) + 1">
+                <div class="empty-state">No records found</div>
+              </td></tr>
+            }
+            @for (row of pickerRows; track pickerRowKey(row)) {
+              <tr>
+                <td>
+                  <input type="checkbox" [checked]="isPickerRowSelected(row)"
+                    (change)="togglePickerRow(row, $any($event.target).checked)" />
+                </td>
+                @for (col of pickerCfg.columns; track col.key) {
+                  <td [class]="col.cls" [class.align-right]="col.align === 'right'">{{ cellValue(row, col) }}</td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="modal-pagination">
+        <span class="pg-info">{{ pickerTotal.toLocaleString() }} records</span>
+        <button class="pg-btn" [disabled]="pickerPage === 1" (click)="goToPickerPage(pickerPage - 1)">&#8249;</button>
+        <span class="pg-info">Page {{ pickerPage }} / {{ pickerTotalPages }}</span>
+        <button class="pg-btn" [disabled]="pickerPage === pickerTotalPages" (click)="goToPickerPage(pickerPage + 1)">&#8250;</button>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" (click)="closePicker()">Cancel</button>
+        <button class="btn btn-primary" [disabled]="pickerSelected.size === 0" (click)="confirmPickerSync()">
+          Sync Selected ({{ pickerSelected.size }})
+        </button>
+      </div>
+    </div>
+  </div>
+}
+
+<!-- Toasts -->
+<div class="toast-container">
+  @for (t of toasts; track t.id) {
+    <div class="toast" [class.success]="t.type==='success'" [class.error]="t.type==='error'" [class.info]="t.type==='info'">
+      {{ t.message }}
+    </div>
+  }
+</div>

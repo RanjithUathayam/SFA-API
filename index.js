@@ -39,6 +39,7 @@ const syncController    = require('./src/controllers/syncController');
 const pushController    = require('./src/controllers/pushController');
 const productController = require('./src/controllers/productController');
 const masterController  = require('./src/controllers/masterController');
+const priceListController = require('./src/controllers/priceListController');
 const ehrController     = require('./src/controllers/ehrController');
 const { startCronJobs } = require('./src/scheduler/cronJobs');
 
@@ -91,6 +92,10 @@ app.post('/api/products/push-all', productController.pushAllProducts);
 app.get ('/api/master/:masterType/list',     masterController.getMasterList);
 app.post('/api/master/:masterType/push',     masterController.pushMasterRecords);
 app.post('/api/master/:masterType/push-all', masterController.pushAllMasterRecords);
+
+// ── Dedicated Price List routes (row-level, correct pricing source) ───────────
+app.get ('/api/pricelist/rows',   priceListController.getPriceListRows);
+app.get ('/api/pricelist/states', priceListController.getPriceListStates);
 
 // ── EHR Attendance routes ──────────────────────────────────────────────────
 app.get ('/api/ehr/logs',                   ehrController.getEhrLogs);
