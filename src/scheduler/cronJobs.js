@@ -649,9 +649,9 @@ function startCronJobs() {
         async () => { await runProductApiSync(); }
     );
 
-    scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
-        async () => { await runPriceListApiSync(); }
-    );
+    // scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
+    //     async () => { await runPriceListApiSync(); }
+    // );
 
     scheduleDaily(2, 0, 'Business Partner API Sync (02:00 AM IST)',
         async () => { await runBusinessPartnerApiSync(); }

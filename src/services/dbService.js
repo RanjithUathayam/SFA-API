@@ -17,7 +17,7 @@ async function getProductData(lastSyncDate, offset = 0, limit = 500) {
     const query = `SELECT DISTINCT
             t0.ItemCode AS ProductCode,
             case when t0.U_SubGrp1='UATHAYAM DHOTIE' THEN t3.U_CatalgCode ELSE t0.ItemName END AS ProductName,
-            CASE WHEN T0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
+            CASE WHEN t0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
             t0.U_SubGrp7 AS ProductGroupCode,
             t0.U_SubGrp7 AS ShortDesc,
             t0.ItemName AS DetailedDesc,
@@ -115,164 +115,266 @@ async function getPriceListData() {
         const pool = await getPool();
 
         const query = `
-                WITH itempriced
-                    AS (SELECT T1.u_itemcode,
-                                T0.docentry,
-                                T2.u_brand,
-                                T0.u_state,
-                                T0.u_selprice,
-                                T0.u_mrp,
-                                T2.u_lock,
-                                T0.lineid,
-                                T2.u_catalgcode
-                        FROM   [BBLive].[dbo].[@ins_plm2] T0
-                                INNER JOIN [BBLive].[dbo].[@ins_oplm] T1
-                                        ON T0.docentry = T1.docentry
-                                INNER JOIN [BBLive].[dbo].[@ins_plm1] T2
-                                        ON T0.docentry = T2.docentry
-                                        AND T2.lineid = T0.u_rowid
-                        WHERE  T2.u_lock = 'N'
-                                AND T0.u_mrp > 0),
-                    sizepriced
-                    AS (SELECT T1b.u_subgroup1,
-                                T1b.u_subgroup7,
-                                T1b.u_subgroup4,
-                                T3b.u_size,
-                                T0b.docentry,
-                                T1b.U_SubGroup1  AS U_Brand,
-                                Cast(T2b.u_code AS VARCHAR(50)) AS U_State,
-                                T3b.u_selprice,
-                                T3b.u_mrp,
-                                'N'                       AS U_Lock,
-                                T1b.lineid,
-                                Cast(NULL AS VARCHAR(50)) AS U_CatalgCode
-                        FROM   [BBLive].[dbo].[@ins_oplsn] T0b WITH (nolock)
-                                INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b WITH (nolock)
-                                        ON T0b.docentry = T1b.docentry
-                                INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b WITH (nolock)
-                                        ON T0b.docentry = T3b.docentry
-                                        AND T1b.lineid = T3b.u_uniqid
-                                INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b WITH (nolock)
-                                        ON T0b.docentry = T2b.docentry
-                                        AND T2b.u_selected = 'Y'
-                        WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
-                               -- AND T1b.u_subgroup7 in ('MAJESTIC')
-                                AND T3b.u_mrp > 0
-					 ),
-                    combined
-                    AS (
-                        -- Source 1: SizePriced from [@INS_OPLSN] (NEW - preferred) -> priority 1
-                        SELECT t0.itemcode  AS ProductCode,
-                            B.docentry   AS PriceListID,
-                            B.u_state    AS SubBrandCode,
-                            CASE
-                                WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
-                                ELSE t0.itemname
-                            END          AS BPProductName,
-                            B.u_state    AS PriceListCode,
-                            NULL         AS EffectiveFrom,
-                            NULL         AS EffectiveTo,
-                            CASE
-                                WHEN B.u_lock = 'Y' THEN 0
-                                ELSE 1
-                            END          AS PriceListIsActive,
-                            'Dealer'     AS BPCategory,
-                            B.u_selprice AS Price,
-                            B.u_mrp      AS MRP,
-                            B.lineid     AS PriceID,
-                            CASE
-                                WHEN B.u_lock = 'Y' THEN 0
-                                ELSE 1
-                            END          AS PriceIsActive,
-                            1            AS SourcePriority
-                        FROM   [BBLive].[dbo].oitm t0
-                            INNER JOIN sizepriced B
-                                    ON B.u_subgroup7 = t0.u_subgrp7
+        IF OBJECT_ID('tempdb..#finalout') IS NOT NULL DROP TABLE #finalout;
+
+        WITH itempriced AS (
+            SELECT T1.u_itemcode, T0.docentry, T2.u_brand, T0.u_state,
+                T0.u_selprice, T0.u_mrp, T2.u_lock, T0.lineid, T2.u_catalgcode
+            FROM   [BBLive].[dbo].[@ins_plm2]  T0 WITH (NOLOCK)
+                INNER JOIN [BBLive].[dbo].[@ins_oplm] T1 WITH (NOLOCK) ON T0.docentry = T1.docentry
+                INNER JOIN [BBLive].[dbo].[@ins_plm1] T2 WITH (NOLOCK) ON T0.docentry = T2.docentry
+                                                                        AND T2.lineid = T0.u_rowid
+            WHERE  T2.u_lock = 'N'
+                AND T0.u_mrp > 0
+                AND T0.u_state IN ('TN','KA','KL','AP')          -- push filter down
+        ),
+        sizepriced AS (
+            SELECT T1b.u_subgroup1, T1b.u_subgroup7, T1b.u_subgroup4, T3b.u_size,
+                T0b.docentry, T1b.U_SubGroup1 AS U_Brand,
+                CAST(T2b.u_code AS VARCHAR(50)) AS U_State,
+                T3b.u_selprice, T3b.u_mrp, 'N' AS U_Lock, T1b.lineid,
+                CAST(NULL AS VARCHAR(50)) AS U_CatalgCode
+            FROM   [BBLive].[dbo].[@ins_oplsn] T0b WITH (NOLOCK)
+                INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b WITH (NOLOCK) ON T0b.docentry = T1b.docentry
+                INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b WITH (NOLOCK) ON T0b.docentry = T3b.docentry
+                                                                            AND T1b.lineid = T3b.u_uniqid
+                INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b WITH (NOLOCK) ON T0b.docentry = T2b.docentry
+                                                                            AND T2b.u_selected = 'Y'
+                                                                            AND T3b.U_Lock <> 'Y'
+            WHERE  GETDATE() BETWEEN T0b.u_validfrom AND T0b.u_validto
+                AND T1b.U_SubGroup1 NOT IN ('UATHAYAM MENS SET','UATHAYAM KIDS SET','ARISER HOS','UATHAYAM HOS','ARISER KNITS')
+                AND T3b.u_mrp > 0
+                AND T0b.U_DocDate > '20260101'
+                AND T2b.u_code IN ('TN','KA','KL','AP')          -- push filter down
+        ),
+
+        combined AS (
+            SELECT t0.itemcode AS ProductCode, B.docentry AS PriceListID, B.u_state AS SubBrandCode,
+                t0.itemname AS BPProductName,                    -- dead CASE removed (always excludes DHOTIE here)
+                B.u_catalgcode AS CatalogCode, B.u_state AS PriceListCode,
+                CAST(NULL AS DATE) AS EffectiveFrom, CAST(NULL AS DATE) AS EffectiveTo,
+                CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceListIsActive,
+                'Dealer' AS BPCategory, B.u_selprice AS Price, B.u_mrp AS MRP, B.lineid AS PriceID,
+                CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceIsActive,
+                t0.u_subgrp1 AS SubGrp1, 'PriceList (@INS_OPLSN)' AS SourceTable, 1 AS SourcePriority
+            FROM   [BBLive].[dbo].oitm t0 WITH (NOLOCK)
+                INNER JOIN sizepriced B ON B.u_subgroup7 = t0.u_subgrp7
                                         AND B.u_subgroup4 = t0.u_subgrp4
                                         AND B.u_subgroup1 = t0.u_subgrp1
-                                        AND B.u_size = t0.u_subgrp5
-                        WHERE  B.u_selprice > 0
-                            AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
-                                                    'SAMPLE'
-                                                    ,
-                                                    'PRINTING & STATIONERY',
-                                                    'IMPERIAL COMPUTERS',
-                                                        'PACKING MATERIAL',
-                                                    'REPAIRS & MAINTENANCE',
-                                                    'SALES PROMOTION EXPENSES',
-                                                    'EVERYDAY DHOTIE',
-                                                        'ALLDAYS DHOTIE', 'ADD DHOTIE',
-                                                    'ADD SHIRT', 'EVERYDAY SHIRTING',
-                                                    'EVERYDAY RDY' )
-							--AND t0.u_subgrp7 in ('MAJESTIC')
-                            AND t0.validfor = 'Y'
-                        UNION ALL
-                        -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
-                        SELECT t0.itemcode  AS ProductCode,
-                                B.docentry   AS PriceListID,
-                                B.u_state    AS SubBrandCode,
-                                CASE
-                                WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
-                                ELSE t0.itemname
-                                END          AS BPProductName,
-                                B.u_state    AS PriceListCode,
-                                NULL         AS EffectiveFrom,
-                                NULL         AS EffectiveTo,
-                                CASE
-                                WHEN B.u_lock = 'Y' THEN 0
-                                ELSE 1
-                                END          AS PriceListIsActive,
-                                'Dealer'     AS BPCategory,
-                                B.u_selprice AS Price,
-                                B.u_mrp      AS MRP,
-                                B.lineid     AS PriceID,
-                                CASE
-                                WHEN B.u_lock = 'Y' THEN 0
-                                ELSE 1
-                                END          AS PriceIsActive,
-                                2            AS SourcePriority
-                        FROM   [BBLive].[dbo].oitm t0
-                                INNER JOIN itempriced B
-                                        ON B.u_itemcode = t0.itemcode
-                        WHERE  B.u_selprice > 0
-                                AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
-                                                    'SAMPLE',
-                                                    'PRINTING & STATIONERY',
-                                                    'IMPERIAL COMPUTERS',
-                                                        'PACKING MATERIAL',
-                                                    'REPAIRS & MAINTENANCE',
-                                                    'SALES PROMOTION EXPENSES',
-                                                    'EVERYDAY DHOTIE',
-                                                        'ALLDAYS DHOTIE', 'ADD DHOTIE',
-                                                    'ADD SHIRT', 'EVERYDAY SHIRTING',
-                                                    'EVERYDAY RDY'
-                                                    )
-                                AND t0.validfor = 'Y'
-								--AND t0.u_subgrp7 in ('MAJESTIC')
-                                 ),
-                    ranked
-                    AS (SELECT *,
-                                Row_number()
-                                OVER (
-                                    partition BY ProductCode, SubBrandCode
-                                    ORDER BY sourcepriority ) AS rn
-                        FROM   combined)
-                SELECT ProductCode,
-                    PriceListID,
-                    SubBrandCode,
-                    BPProductName,
-                    PriceListCode,
-                    EffectiveFrom,
-                    EffectiveTo,
-                    PriceListIsActive,
-                    BPCategory,
-                    Price,
-                    MRP,
-                    PriceID,
-                    PriceIsActive
-                FROM   ranked
-            WHERE  rn = 1
-        `;
+                                        AND B.u_size      = t0.u_subgrp5
+            WHERE  B.u_selprice > 0
+                AND t0.u_subgrp1 <> 'UATHAYAM DHOTIE'
+                AND t0.validfor = 'Y'
+                AND B.u_brand NOT IN ('ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+                                        'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+                                        'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE','ADD DHOTIE',
+                                        'EVERYDAY SHIRTING','EVERYDAY RDY','ADD SHIRT') 
+            UNION ALL
+            SELECT t0.itemcode, B.docentry, B.u_state,
+                CASE WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode ELSE t0.itemname END,
+                B.u_catalgcode, B.u_state,
+                CAST(NULL AS DATE), CAST(NULL AS DATE),
+                CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END,
+                'Dealer', B.u_selprice, B.u_mrp, B.lineid,
+                CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END,
+                t0.u_subgrp1, 'PriceList Master (@INS_OPLM)', 2
+            FROM   [BBLive].[dbo].oitm t0 WITH (NOLOCK)
+                INNER JOIN itempriced B ON B.u_itemcode = t0.itemcode
+            WHERE  B.u_selprice > 0
+                AND t0.validfor = 'Y'
+                AND B.u_brand NOT IN ('ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+                                        'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+                                        'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE','ADD DHOTIE',
+                                        'EVERYDAY SHIRTING','EVERYDAY RDY','ADD SHIRT')   
+        ),
+        ranked AS (
+            SELECT *,
+                ROW_NUMBER() OVER (PARTITION BY ProductCode, SubBrandCode, BPProductName
+                                    ORDER BY SourcePriority, PriceID) AS rn
+            FROM   combined
+        )
+        SELECT ProductCode, PriceListID, SubBrandCode, BPProductName, CatalogCode, PriceListCode,
+            EffectiveFrom, EffectiveTo, PriceListIsActive, BPCategory, Price, MRP, PriceID, PriceIsActive
+        INTO   #finalout
+        FROM   ranked
+        WHERE  rn = 1;
+
+        CREATE CLUSTERED INDEX ix_finalout_state ON #finalout (PriceListCode);
+
+        /* ---------------------------------------------------------------
+        Now build the output from the materialized #finalout ONCE.
+        ------------------------------------------------------------- */
+        SELECT ProductCode, PriceListID, SubBrandCode, BPProductName, CatalogCode, PriceListCode,
+            EffectiveFrom, EffectiveTo, PriceListIsActive, BPCategory, Price, MRP, PriceID, PriceIsActive
+        FROM   #finalout
+        WHERE  PriceListCode <> 'TS'
+        UNION ALL
+        SELECT ProductCode, PriceListID, 'TS', BPProductName, CatalogCode, 'TS',
+            EffectiveFrom, EffectiveTo, PriceListIsActive, BPCategory, Price, MRP, PriceID, PriceIsActive
+        FROM   #finalout
+        WHERE  SubBrandCode = 'AP';
+
+        DROP TABLE #finalout;`
+
+        // const query = `
+        //         WITH itempriced
+        //             AS (SELECT T1.u_itemcode,
+        //                         T0.docentry,
+        //                         T2.u_brand,
+        //                         T0.u_state,
+        //                         T0.u_selprice,
+        //                         T0.u_mrp,
+        //                         T2.u_lock,
+        //                         T0.lineid,
+        //                         T2.u_catalgcode
+        //                 FROM   [BBLive].[dbo].[@ins_plm2] T0
+        //                         INNER JOIN [BBLive].[dbo].[@ins_oplm] T1
+        //                                 ON T0.docentry = T1.docentry
+        //                         INNER JOIN [BBLive].[dbo].[@ins_plm1] T2
+        //                                 ON T0.docentry = T2.docentry
+        //                                 AND T2.lineid = T0.u_rowid
+        //                 WHERE  T2.u_lock = 'N'
+        //                         AND T0.u_mrp > 0),
+        //             sizepriced
+        //             AS (SELECT T1b.u_subgroup1,
+        //                         T1b.u_subgroup7,
+        //                         T1b.u_subgroup4,
+        //                         T3b.u_size,
+        //                         T0b.docentry,
+        //                         T1b.U_SubGroup1  AS U_Brand,
+        //                         Cast(T2b.u_code AS VARCHAR(50)) AS U_State,
+        //                         T3b.u_selprice,
+        //                         T3b.u_mrp,
+        //                         'N'                       AS U_Lock,
+        //                         T1b.lineid,
+        //                         Cast(NULL AS VARCHAR(50)) AS U_CatalgCode
+        //                 FROM   [BBLive].[dbo].[@ins_oplsn] T0b WITH (nolock)
+        //                         INNER JOIN [BBLive].[dbo].[@ins_plsn1] T1b WITH (nolock)
+        //                                 ON T0b.docentry = T1b.docentry
+        //                         INNER JOIN [BBLive].[dbo].[@ins_plsn3] T3b WITH (nolock)
+        //                                 ON T0b.docentry = T3b.docentry
+        //                                 AND T1b.lineid = T3b.u_uniqid
+        //                         INNER JOIN [BBLive].[dbo].[@ins_plsn2] T2b WITH (nolock)
+        //                                 ON T0b.docentry = T2b.docentry
+        //                                 AND T2b.u_selected = 'Y'
+        //                 WHERE  Getdate() BETWEEN T0b.u_validfrom AND T0b.u_validto
+        //                        -- AND T1b.u_subgroup7 in ('MAJESTIC')
+        //                         AND T3b.u_mrp > 0
+		// 			 ),
+        //             combined
+        //             AS (
+        //                 -- Source 1: SizePriced from [@INS_OPLSN] (NEW - preferred) -> priority 1
+        //                 SELECT t0.itemcode  AS ProductCode,
+        //                     B.docentry   AS PriceListID,
+        //                     B.u_state    AS SubBrandCode,
+        //                     CASE
+        //                         WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
+        //                         ELSE t0.itemname
+        //                     END          AS BPProductName,
+        //                     B.u_state    AS PriceListCode,
+        //                     NULL         AS EffectiveFrom,
+        //                     NULL         AS EffectiveTo,
+        //                     CASE
+        //                         WHEN B.u_lock = 'Y' THEN 0
+        //                         ELSE 1
+        //                     END          AS PriceListIsActive,
+        //                     'Dealer'     AS BPCategory,
+        //                     B.u_selprice AS Price,
+        //                     B.u_mrp      AS MRP,
+        //                     B.lineid     AS PriceID,
+        //                     CASE
+        //                         WHEN B.u_lock = 'Y' THEN 0
+        //                         ELSE 1
+        //                     END          AS PriceIsActive,
+        //                     1            AS SourcePriority
+        //                 FROM   [BBLive].[dbo].oitm t0
+        //                     INNER JOIN sizepriced B
+        //                             ON B.u_subgroup7 = t0.u_subgrp7
+        //                                 AND B.u_subgroup4 = t0.u_subgrp4
+        //                                 AND B.u_subgroup1 = t0.u_subgrp1
+        //                                 AND B.u_size = t0.u_subgrp5
+        //                 WHERE  B.u_selprice > 0
+        //                     AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
+        //                                             'SAMPLE'
+        //                                             ,
+        //                                             'PRINTING & STATIONERY',
+        //                                             'IMPERIAL COMPUTERS',
+        //                                                 'PACKING MATERIAL',
+        //                                             'REPAIRS & MAINTENANCE',
+        //                                             'SALES PROMOTION EXPENSES',
+        //                                             'EVERYDAY DHOTIE',
+        //                                                 'ALLDAYS DHOTIE', 'ADD DHOTIE',
+        //                                             'ADD SHIRT', 'EVERYDAY SHIRTING',
+        //                                             'EVERYDAY RDY' )
+		// 					--AND t0.u_subgrp7 in ('MAJESTIC')
+        //                     AND t0.validfor = 'Y'
+        //                 UNION ALL
+        //                 -- Source 2: ItemPriced from [@INS_OPLM] (fallback) -> priority 2
+        //                 SELECT t0.itemcode  AS ProductCode,
+        //                         B.docentry   AS PriceListID,
+        //                         B.u_state    AS SubBrandCode,
+        //                         CASE
+        //                         WHEN t0.u_subgrp1 = 'UATHAYAM DHOTIE' THEN B.u_catalgcode
+        //                         ELSE t0.itemname
+        //                         END          AS BPProductName,
+        //                         B.u_state    AS PriceListCode,
+        //                         NULL         AS EffectiveFrom,
+        //                         NULL         AS EffectiveTo,
+        //                         CASE
+        //                         WHEN B.u_lock = 'Y' THEN 0
+        //                         ELSE 1
+        //                         END          AS PriceListIsActive,
+        //                         'Dealer'     AS BPCategory,
+        //                         B.u_selprice AS Price,
+        //                         B.u_mrp      AS MRP,
+        //                         B.lineid     AS PriceID,
+        //                         CASE
+        //                         WHEN B.u_lock = 'Y' THEN 0
+        //                         ELSE 1
+        //                         END          AS PriceIsActive,
+        //                         2            AS SourcePriority
+        //                 FROM   [BBLive].[dbo].oitm t0
+        //                         INNER JOIN itempriced B
+        //                                 ON B.u_itemcode = t0.itemcode
+        //                 WHERE  B.u_selprice > 0
+        //                         AND B.u_brand NOT IN ( 'ACCESSORIES', 'ADVERTISEMENT', 'ALL',
+        //                                             'SAMPLE',
+        //                                             'PRINTING & STATIONERY',
+        //                                             'IMPERIAL COMPUTERS',
+        //                                                 'PACKING MATERIAL',
+        //                                             'REPAIRS & MAINTENANCE',
+        //                                             'SALES PROMOTION EXPENSES',
+        //                                             'EVERYDAY DHOTIE',
+        //                                                 'ALLDAYS DHOTIE', 'ADD DHOTIE',
+        //                                             'ADD SHIRT', 'EVERYDAY SHIRTING',
+        //                                             'EVERYDAY RDY'
+        //                                             )
+        //                         AND t0.validfor = 'Y'
+		// 						--AND t0.u_subgrp7 in ('MAJESTIC')
+        //                          ),
+        //             ranked
+        //             AS (SELECT *,
+        //                         Row_number()
+        //                         OVER (
+        //                             partition BY ProductCode, SubBrandCode
+        //                             ORDER BY sourcepriority ) AS rn
+        //                 FROM   combined)
+        //         SELECT ProductCode,
+        //             PriceListID,
+        //             SubBrandCode,
+        //             BPProductName,
+        //             PriceListCode,
+        //             EffectiveFrom,
+        //             EffectiveTo,
+        //             PriceListIsActive,
+        //             BPCategory,
+        //             Price,
+        //             MRP,
+        //             PriceID,
+        //             PriceIsActive
+        //         FROM   ranked
+        //     WHERE  rn = 1
+        // `;
 
         const { recordset } = await pool.request().query(query);
         return recordset;
@@ -1160,7 +1262,7 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
             COUNT(*) OVER() AS TotalCount,
             t0.ItemCode                                                     AS ProductCode,
             t0.ItemName                                                     AS ProductName,
-            CASE WHEN t0.validFor = 'Y' THEN 1 ELSE 0 END                  AS ProductIsActive,
+            CASE WHEN t0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
             t0.U_SubGrp7                                                    AS ProductGroupCode,
             t0.U_SubGrp1                                                    AS Brand,
             t0.U_SubGrp3                                                    AS CategoryName,
@@ -1303,7 +1405,7 @@ async function getProductDataByCodes(productCodes) {
         SELECT
             t0.ItemCode AS ProductCode,
             t0.ItemName AS ProductName,
-            CASE WHEN t0.validFor='Y' THEN 1 ELSE 0 END AS ProductIsActive,
+            CASE WHEN t0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
             t0.U_SubGrp7  AS ProductGroupCode,
             t0.U_SubGrp7  AS ShortDesc,
             t0.ItemName   AS DetailedDesc,
@@ -1388,9 +1490,9 @@ function buildRankedPriceCte(itemCodeFilter = '') {
     return `
         WITH itempriced AS (
             SELECT T1.u_itemcode, T0.docentry, T2.u_brand, T0.u_state, T0.u_selprice, T0.u_mrp, T2.u_lock, T0.lineid, T2.u_catalgcode
-            FROM [BBLive].[dbo].[@ins_plm2] T0
-            INNER JOIN [BBLive].[dbo].[@ins_oplm] T1 ON T0.docentry = T1.docentry
-            INNER JOIN [BBLive].[dbo].[@ins_plm1] T2 ON T0.docentry = T2.docentry AND T2.lineid = T0.u_rowid
+            FROM [BBLive].[dbo].[@ins_plm2] T0 WITH (nolock)
+            INNER JOIN [BBLive].[dbo].[@ins_oplm] T1 WITH (nolock) ON T0.docentry = T1.docentry
+            INNER JOIN [BBLive].[dbo].[@ins_plm1] T2 WITH (nolock) ON T0.docentry = T2.docentry AND T2.lineid = T0.u_rowid
             WHERE T2.u_lock = 'N' AND T0.u_mrp > 0
             ${itemCodeFilter ? `AND T1.u_itemcode ${itemCodeFilter}` : ''}
         ),
@@ -1413,7 +1515,7 @@ function buildRankedPriceCte(itemCodeFilter = '') {
                    B.u_selprice AS Price, B.u_mrp AS MRP, B.lineid AS PriceID,
                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END AS PriceIsActive,
                    t0.u_subgrp7 AS ProductGroupCode, t0.u_subgrp1 AS Brand, 1 AS SourcePriority
-            FROM [BBLive].[dbo].oitm t0
+            FROM [BBLive].[dbo].oitm t0 WITH (nolock)
             INNER JOIN sizepriced B
                 ON B.u_subgroup7 = t0.u_subgrp7 AND B.u_subgroup4 = t0.u_subgrp4
                    AND B.u_subgroup1 = t0.u_subgrp1 AND B.u_size = t0.u_subgrp5
@@ -1428,7 +1530,7 @@ function buildRankedPriceCte(itemCodeFilter = '') {
                    B.u_selprice, B.u_mrp, B.lineid,
                    CASE WHEN B.u_lock = 'Y' THEN 0 ELSE 1 END,
                    t0.u_subgrp7, t0.u_subgrp1, 2
-            FROM [BBLive].[dbo].oitm t0
+            FROM [BBLive].[dbo].oitm t0 WITH (nolock)
             INNER JOIN itempriced B ON B.u_itemcode = t0.itemcode
             WHERE B.u_selprice > 0 AND B.u_brand NOT IN (${PRICE_EXCLUDED_BRANDS}) AND t0.validfor = 'Y'
             ${itemCodeFilter ? `AND t0.itemcode ${itemCodeFilter}` : ''}
