@@ -1402,39 +1402,89 @@ async function getProductDataByCodes(productCodes) {
     }).join(',');
 
     const query = `
-        SELECT
+        SELECT DISTINCT
             t0.ItemCode AS ProductCode,
-            t0.ItemName AS ProductName,
+            case when t0.U_SubGrp1='UATHAYAM DHOTIE' THEN t3.U_CatalgCode ELSE t0.ItemName END AS ProductName,
             CASE WHEN t0.U_SFAItemActiveStatus = 'Yes' THEN 0 ELSE 1 END AS ProductIsActive,
-            t0.U_SubGrp7  AS ProductGroupCode,
-            t0.U_SubGrp7  AS ShortDesc,
-            t0.ItemName   AS DetailedDesc,
-            t0.U_SubGrp3  AS CategoryName,
-            t0.U_SubGrp4  AS StyleCode,
+            t0.U_SubGrp7 AS ProductGroupCode,
+            t0.U_SubGrp7 AS ShortDesc,
+            t0.ItemName AS DetailedDesc,
+            t0.U_SubGrp3 AS CategoryName,
+            t0.U_SubGrp4 AS StyleCode,
             RTRIM(t0.U_SubGrp5) AS SizeCode,
             CASE
                 WHEN t0.U_SubGrp1 LIKE '%ARISER%'   THEN 'ARISER'
                 WHEN t0.U_SubGrp1 LIKE '%UATHAYAM%' THEN 'UATHAYAM'
             END AS DivisionCode,
             t0.SalPackMsr AS UOM,
-            t0.U_SubGrp3  AS AttributeSetName,
-            RTRIM(t0.U_SubGrp5)  AS SizeGroup,
-            t0.U_HSNCODE  AS HSNCode,
-            t0.U_SubGrp1  AS Brand,
-            t0.SalPackUn  AS SalPackUn,
-            RTRIM(t0.U_SubGrp6)  AS ColorCode,
+            t0.U_SubGrp3 AS AttributeSetName,
+            RTRIM(t0.U_SubGrp5) AS SizeGroup,
+            t0.U_HSNCODE AS HSNCode,
+            t0.U_SubGrp1 AS Brand,
+            t0.SalPackUn AS SalPackUn,
+            RTRIM(t0.U_SubGrp6) AS ColorCode,
             ISNULL(t0.U_SubGrp11, T0.U_SUBGRP6) AS ColorName,
             ISNULL(t0.U_SubGrp17, T0.U_SubGrp6) AS Color,
             ISNULL(t0.U_SubGrp13, T0.U_SubGrp6) AS Shade,
-            t0.MinLevel   AS Min_Qty,
-            t0.MaxLevel   AS Max_Qty,
+            t0.MinLevel AS Min_Qty,
+            t0.MaxLevel AS Max_Qty,
             CASE WHEN t0.U_SubGrp13='Core item' THEN 1 ELSE 0 END AS IsCoreColor,
-            t0.U_taxrate  AS TaxBelow2500,
+            t0.U_taxrate AS TaxBelow2500,
             t0.U_taxrate1000 AS TaxAbove2500,
-            t0.U_SubGrp1  AS SubBrandCode
+            t0.U_SubGrp1 AS SubBrandCode,nattu.SerialNo as ColorSort
         FROM [BBLive].[dbo].oitm t0
         JOIN [BBLive].[dbo].oitb t1 ON t0.ItmsGrpCod = t1.ItmsGrpCod
-        WHERE t0.ItemCode IN (${placeholders})
+        LEFT JOIN
+        (
+            select t0.U_SubGroup3,t1.U_SubGroup1,t1.U_SubGroup7,t1.U_SubGroup4,T3.U_Size,T3.U_SelPrice,T3.U_MRP,T2.U_Code from [BBLive].[dbo]."@INS_OPLSN" as t0 WITH(NOLOCK)
+            INNER JOIN [BBLive].[dbo]."@INS_PLSN1" AS T1  WITH(NOLOCK) ON t0.DocEntry=T1.DocEntry
+            INNER JOIN [BBLive].[dbo]."@INS_PLSN3" AS T3  WITH(NOLOCK) ON t0.DocEntry=T3.DocEntry AND T1.LineId=T3.U_UniqID
+            INNER JOIN [BBLive].[dbo]."@INS_PLSN2" AS T2  WITH(NOLOCK) ON t0.DocEntry=T2.DocEntry AND T2.U_Selected='Y'
+            WHERE GETDATE() BETWEEN t0.U_ValidFrom AND t0.U_ValidTo
+        )F ON CONCAT(F.U_SubGroup7,F.U_SubGroup4,'',F.U_SubGroup1,'',F.U_Size)=concat(T0.U_SubGrp7,T0.U_SUBGRP4,'',T0.U_SubGrp1,'',T0.U_SUBGRP5)
+        LEFT JOIN [BBLive].[dbo]."@INS_OPLM" T2 ON T2.U_ItemCode=T0.ItemCode
+		inner join [BBLive].[dbo].mohan as nattu on nattu.U_SubGrp6=t0.U_SubGrp6 and nattu.u_subgrp1=t0.U_SubGrp1 and nattu.U_SubGrp7=t0.U_SubGrp7
+        OUTER APPLY (
+            SELECT TOP 1 T3x.U_CatalgCode
+            FROM [BBLive].[dbo]."@INS_PLM1" T3x
+            WHERE T3x.DocEntry = T2.DocEntry AND T3x.U_Lock = 'N'
+            ORDER BY T3x.LineId DESC   -- confirm this is the right tie-breaker for "current" catalog code
+        ) T3
+        WHERE
+            (
+                EXISTS (
+                    SELECT 1
+                    FROM [BBLive].[dbo].OITM AS A
+                    INNER JOIN
+                    (
+                        select t0b.U_SubGroup3, t1b.U_SubGroup1, t1b.U_SubGroup7, t1b.U_SubGroup4, T3b.U_Size
+                        from [BBLive].[dbo]."@INS_OPLSN" as t0b WITH(NOLOCK)
+                        INNER JOIN [BBLive].[dbo]."@INS_PLSN1" AS T1b WITH(NOLOCK) ON t0b.DocEntry=T1b.DocEntry
+                        INNER JOIN [BBLive].[dbo]."@INS_PLSN3" AS T3b WITH(NOLOCK) ON t0b.DocEntry=T3b.DocEntry AND T1b.LineId=T3b.U_UniqID
+                        INNER JOIN [BBLive].[dbo]."@INS_PLSN2" AS T2b WITH(NOLOCK) ON t0b.DocEntry=T2b.DocEntry AND T2b.U_Selected='Y'
+                        WHERE GETDATE() BETWEEN t0b.U_ValidFrom AND t0b.U_ValidTo
+                        AND t1b.U_SubGroup7 = t0.U_SubGrp7
+                        GROUP BY t0b.U_SubGroup3, t1b.U_SubGroup1, t1b.U_SubGroup7, t1b.U_SubGroup4, T3b.U_Size
+                    ) AS B ON CONCAT(B.U_SubGroup7,B.U_SubGroup4,'',B.U_SubGroup1,'',B.U_Size)
+                            = CONCAT(A.U_SubGrp7,A.U_SUBGRP4,'',A.U_SubGrp1,'',A.U_SUBGRP5)
+                    WHERE A.ItemCode = t0.ItemCode
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM [BBLive].[dbo]."@INS_OPLM" plm
+                    INNER JOIN [BBLive].[dbo]."@INS_PLM2" plm2 ON plm2.DocEntry = plm.DocEntry
+                    WHERE plm.U_ItemCode = t0.ItemCode
+                    AND plm2.U_SelPrice > 0
+                )
+            )
+        AND t0.validFor = 'Y'
+        AND t0.U_SubGrp1 NOT IN (
+            'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+            'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+            'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
+            'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
+        )
+        AND t0.ItemCode IN (${placeholders})
         ORDER BY t0.ItemCode
     `;
 
@@ -1450,10 +1500,16 @@ async function getNextPendingProductTrigger() {
     const pool = await getPool();
 
     const result = await pool.request().query(`
-        SELECT TOP 1 ItemCode, ItemName
-        FROM AITM
+        SELECT ItemCode, ItemName
+        FROM [BBLive].[dbo].AITM
         WHERE U_SFATriggerStatus IS NULL
            OR U_SFATriggerStatus = 'N'
+           AND U_SubGrp1 NOT IN (
+            'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
+            'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
+            'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
+            'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
+        )
         ORDER BY ItemCode
     `);
 
@@ -1466,7 +1522,7 @@ async function markProductTriggerSynced(itemCode) {
     await pool.request()
         .input('ItemCode', sql.NVarChar(50), itemCode)
         .query(`
-            UPDATE AITM
+            UPDATE [BBLive].[dbo].AITM
             SET U_SFATriggerStatus = 'Y'
             WHERE ItemCode = @ItemCode
         `);

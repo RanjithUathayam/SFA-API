@@ -61,7 +61,7 @@ function mapToSalesforcePayload(rows) {
                 ColorCode  : row.ColorCode,
                 ColorName  : row.ColorName,
                 Color      : row.Color,
-                IsActive   : 1,
+                IsActive   : row.ProductIsActive,
                 Shade      : row.Shade,
                 Min_Qty    : row.Min_Qty || 1,
                 Max_Qty    : row.Max_Qty || 100000,
@@ -75,7 +75,7 @@ function mapToSalesforcePayload(rows) {
             if (!product.ProductAttributes.some(a => `${a.Attribute.AttributeName}_${a.AttrVal}` === attrKey)) {
                 product.ProductAttributes.push({
                     AttrVal     : row.AttrVal,
-                    IsActive    : 1,
+                    IsActive    : row.ProductIsActive,
                     Attribute   : {
                         AttributeName      : row.AttributeName,
                         IsMainAttribute    : row.IsMainAttribute    ?? 1,
@@ -98,14 +98,14 @@ function mapToSalesforcePayload(rows) {
         if (row.SubBrandCode && product.ProductSubBrands.length === 0)
             product.ProductSubBrands.push({
                 SubBrandCode: row.SubBrandCode, BPProductName: row.ProductName,
-                DisplayName: row.ProductName, IsActive: 1, SKU: null, AltSKU: null
+                DisplayName: row.ProductName, IsActive: row.ProductIsActive, SKU: null, AltSKU: null
             });
 
         if (product.ProductDefaults.length === 0)
             product.ProductDefaults.push({
                 GroupCode: row.ProductGroupCode, StyleCode: row.StyleCode,
                 SizeCode: row.SizeCode, ColorCode: row.ColorCode,
-                IsActive: 1, DivisionCode: row.DivisionCode
+                IsActive: row.ProductIsActive, DivisionCode: row.DivisionCode
             });
 
         if (product.PROD_PRODUCTGROUP.length === 0)
