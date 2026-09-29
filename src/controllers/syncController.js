@@ -141,72 +141,93 @@ exports.syncProducts = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/sync/productTrigger
 //
-// One-item-at-a-time Product Scheduler:
-//   1. Pull the first AITM row with U_SFATriggerStatus IS NULL OR = 'N'.
+// Product Scheduler — processes every pending OITM row one item at a time:
+//   1. Pull the next OITM row with U_SFAItemActiveStatus = 'Yes' and
+//      U_SFATriggerStatus <> 'Y' (ItemCode greater than the last one
+//      attempted in this run).
 //   2. Sync that single ItemCode to Salesforce.
 //   3. Only on confirmed success, flip U_SFATriggerStatus to 'Y'.
-// If nothing succeeds, the trigger row is left untouched (NULL/'N') so the
-// next scheduler run retries the same item.
+//   4. Move on to the next item — a failed / not-found item never blocks the
+//      loop; it is left pending so the next scheduler run retries it.
 // ─────────────────────────────────────────────────────────────────────────────
+async function syncSingleTriggeredProduct(ItemCode, ItemName) {
+    const rows = await dbService.getProductDataByCodes([ItemCode]);
+    if (!rows.length) {
+        log.warn(`ItemCode ${ItemCode} not found in product master — skipped, left pending for retry.`);
+        return { itemCode: ItemCode, itemName: ItemName, status: 'skipped', reason: 'Item not found in product master' };
+    }
+
+    const payload = mapper.mapToSalesforcePayload(rows);
+    if (!payload.length) {
+        log.warn(`Mapper produced 0 records for ${ItemCode} — skipped, left pending for retry.`);
+        return { itemCode: ItemCode, itemName: ItemName, status: 'skipped', reason: 'Mapper produced no payload' };
+    }
+
+    const results   = await sfService.upsertProducts(payload);
+    const succeeded = results.failed.length === 0 && results.success.length > 0;
+
+    if (!succeeded) {
+        log.error(`ItemCode ${ItemCode} sync did not fully succeed — left pending for retry.`);
+        return { itemCode: ItemCode, itemName: ItemName, status: 'failed', reason: 'Salesforce upsert failed', failed: results.failed };
+    }
+
+    await dbService.markProductTriggerSynced(ItemCode);
+    log.ok(`ItemCode ${ItemCode} synced successfully — U_SFATriggerStatus set to 'Y'.`);
+    return { itemCode: ItemCode, itemName: ItemName, status: 'success' };
+}
+
 exports.syncNextTriggeredProduct = async (req, res) => {
     const startTime = Date.now();
     divider('PRODUCT TRIGGER SYNC START');
 
+    const summary = { processed: 0, success: 0, skipped: 0, failed: 0, items: [] };
+    let lastCode  = null;
+
     try {
-        const trigger = await dbService.getNextPendingProductTrigger();
+        while (true) {
+            const trigger = await dbService.getNextPendingProductTrigger(lastCode);
+            if (!trigger) break;
 
-        if (!trigger) {
-            log.info('No pending AITM trigger rows (U_SFATriggerStatus IS NULL/\'N\') — nothing to sync.');
-            divider();
-            return res.status(200).json({ message: 'No pending items to sync.' });
-        }
+            const { ItemCode, ItemName } = trigger;
+            lastCode = ItemCode;
+            summary.processed++;
+            log.info(`[${summary.processed}] Pending item found : ${ItemCode} (${ItemName})`);
 
-        const { ItemCode, ItemName } = trigger;
-        log.info(`Pending item found : ${ItemCode} (${ItemName})`);
+            let result;
+            try {
+                result = await syncSingleTriggeredProduct(ItemCode, ItemName);
+            } catch (itemErr) {
+                log.error(`ItemCode ${ItemCode} sync threw: ${itemErr.message} — left pending for retry.`);
+                result = { itemCode: ItemCode, itemName: ItemName, status: 'failed', reason: itemErr.message };
+            }
 
-        const rows = await dbService.getProductDataByCodes([ItemCode]);
-        if (!rows.length) {
-            log.warn(`ItemCode ${ItemCode} not found in OITM — leaving U_SFATriggerStatus untouched.`);
-            divider();
-            return res.status(200).json({
-                message : 'Item not found in product master — trigger left pending for retry.',
-                itemCode: ItemCode
-            });
-        }
-
-        const payload = mapper.mapToSalesforcePayload(rows);
-        if (!payload.length) {
-            log.warn(`Mapper produced 0 records for ${ItemCode} — leaving U_SFATriggerStatus untouched.`);
-            divider();
-            return res.status(200).json({
-                message : 'Mapper produced no payload — trigger left pending for retry.',
-                itemCode: ItemCode
-            });
-        }
-
-        const results = await sfService.upsertProducts(payload);
-        const succeeded = results.failed.length === 0 && results.success.length > 0;
-
-        if (succeeded) {
-            await dbService.markProductTriggerSynced(ItemCode);
-            log.ok(`ItemCode ${ItemCode} synced successfully — U_SFATriggerStatus set to 'Y'.`);
-        } else {
-            log.error(`ItemCode ${ItemCode} sync did not fully succeed — U_SFATriggerStatus left as-is for retry.`);
+            summary[result.status]++;
+            if (result.status !== 'success') summary.items.push(result);
         }
 
         divider('PRODUCT TRIGGER SYNC COMPLETE');
-        log.ok(`Elapsed : ${elapsed(startTime)}`);
+        log.ok  (`Elapsed   : ${elapsed(startTime)}`);
+        log.info(`Processed : ${summary.processed}`);
+        log.ok  (`Success   : ${summary.success}`);
+        if (summary.skipped) log.warn (`Skipped   : ${summary.skipped}`);
+        if (summary.failed)  log.error(`Failed    : ${summary.failed}`);
         divider();
 
-        return res.status(succeeded ? 200 : 500).json({
-            message       : succeeded
+        if (summary.processed === 0) {
+            log.info('No pending OITM trigger rows (active, U_SFATriggerStatus <> \'Y\') — nothing to sync.');
+            return res.status(200).json({ message: 'No pending items to sync.' });
+        }
+
+        return res.status(200).json({
+            message       : summary.skipped + summary.failed === 0
                 ? 'Product Trigger Sync Completed Successfully'
-                : 'Product Trigger Sync Failed — item left pending for retry',
+                : 'Product Trigger Sync Completed — some items left pending for retry',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
-            itemCode      : ItemCode,
-            itemName      : ItemName,
-            success       : results.success,
-            failed        : results.failed
+            processed     : summary.processed,
+            success       : summary.success,
+            skipped       : summary.skipped,
+            failed        : summary.failed,
+            pendingItems  : summary.items
         });
 
     } catch (err) {
@@ -216,6 +237,8 @@ exports.syncNextTriggeredProduct = async (req, res) => {
         return res.status(500).json({
             message       : 'Product Trigger Sync Failed',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            processed     : summary.processed,
+            success       : summary.success,
             error         : err.message
         });
     }

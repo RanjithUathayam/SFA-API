@@ -1493,23 +1493,36 @@ async function getProductDataByCodes(productCodes) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PRODUCT SCHEDULER TRIGGER — AITM.U_SFATriggerStatus drives one-item-at-a-time
-// processing: NULL/'N' = pending, 'Y' = already synced.
+// PRODUCT SCHEDULER TRIGGER — OITM.U_SFATriggerStatus drives one-item-at-a-time
+// processing for active items (U_SFAItemActiveStatus = 'Yes'):
+// anything other than 'Y' (NULL/'N') = pending, 'Y' = already synced.
 // ─────────────────────────────────────────────────────────────────────────────
-async function getNextPendingProductTrigger() {
-    const pool = await getPool();
+// afterCode: last ItemCode attempted in the current run. Only rows with a
+// greater ItemCode are returned, so a failed / not-found item is skipped and
+// the scheduler moves on to the next pending item instead of picking the same
+// stuck row forever. Failed items stay pending and are retried next run.
+async function getNextPendingProductTrigger(afterCode = null) {
+    const pool    = await getPool();
+    const request = pool.request();
 
-    const result = await pool.request().query(`
-        SELECT ItemCode, ItemName
-        FROM [BBLive].[dbo].AITM
-        WHERE U_SFATriggerStatus IS NULL
-           OR U_SFATriggerStatus = 'N'
-           AND U_SubGrp1 NOT IN (
+    let afterClause = '';
+    if (afterCode) {
+        request.input('AfterCode', sql.NVarChar(50), afterCode);
+        afterClause = 'AND ItemCode > @AfterCode';
+    }
+
+    const result = await request.query(`
+        SELECT TOP 1 ItemCode, ItemName
+        FROM [BBLive].[dbo].OITM
+        WHERE U_SFAItemActiveStatus = 'Yes'
+          AND ISNULL(U_SFATriggerStatus, '') <> 'Y'
+          AND ISNULL(U_SubGrp1, '') NOT IN (
             'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
             'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',
             'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
             'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
-        )
+          )
+          ${afterClause}
         ORDER BY ItemCode
     `);
 
@@ -1522,7 +1535,7 @@ async function markProductTriggerSynced(itemCode) {
     await pool.request()
         .input('ItemCode', sql.NVarChar(50), itemCode)
         .query(`
-            UPDATE [BBLive].[dbo].AITM
+            UPDATE [BBLive].[dbo].OITM
             SET U_SFATriggerStatus = 'Y'
             WHERE ItemCode = @ItemCode
         `);

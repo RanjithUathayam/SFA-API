@@ -1,6 +1,8 @@
 'use strict';
 
 const cron            = require('node-cron');
+const sql             = require('mssql');
+const dbConfig        = require('../config/dbConfig');
 const dbService       = require('../services/dbService');
 const sfService       = require('../services/sfService');
 const ehrService      = require('../services/ehrService');
@@ -160,12 +162,13 @@ async function runStockInventoryApiSync() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Product API sync — one item at a time, driven by AITM.U_SFATriggerStatus.
+// Product API sync — one item at a time, driven by OITM.U_SFATriggerStatus
+// (active items only: U_SFAItemActiveStatus = 'Yes').
 // Calls syncController.syncNextTriggeredProduct directly (same mock req/res
 // adapter pattern as runStockInventoryApiSync) so the scheduled run and the
 // manual POST /api/sync/productTrigger endpoint share one implementation.
-// Only marks the AITM row 'Y' when the sync actually succeeds; otherwise the
-// item is left NULL/'N' so the next run retries it.
+// Only marks the OITM row 'Y' when the sync actually succeeds; otherwise the
+// item is left pending (not 'Y') so the next run retries it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function runProductApiSync() {
@@ -200,9 +203,151 @@ async function runProductApiSync() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Price List API sync — calls syncController.syncPriceLists directly (same
-// mock req/res adapter pattern as runStockInventoryApiSync).
+// Price List API sync — scheduled only. Pulls ONLY the rows whose price/MRP
+// changed since the previous approved revision (@AINS_* log tables) from both
+// Price List Master (@INS_OPLM) and Price List Setup (@INS_OPLSN), maps them to
+// the standard PriceList payload and pushes them to Salesforce.
+// The manual POST /api/sync/pricelists endpoint (syncController.syncPriceLists)
+// is untouched and still performs the full sync.
 // ─────────────────────────────────────────────────────────────────────────────
+
+const PRICE_LIST_CHANGES_QUERY = `
+;WITH
+-- ================= PRICE LIST MASTER =================
+curM AS (
+    SELECT  T1.DocEntry, T1.U_ItemCode, T1.U_ItemName, T1.UpdateDate,
+            I.U_SubGrp1, I.U_SubGrp5,
+            T0.LineId, T0.U_RowId, T0.U_State, T0.U_SelPrice, T0.U_MRP
+    FROM [BBLive].[dbo].[@INS_PLM2] T0
+    INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T1.DocEntry = T0.DocEntry
+    INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T2.DocEntry = T0.DocEntry
+                                            AND T2.LineId = T0.U_RowId
+    INNER JOIN [BBLive].[dbo].OITM I ON I.ItemCode = T1.U_ItemCode
+    WHERE T2.U_Lock = 'N'
+      AND T0.U_MRP > 0
+      AND I.validFor = 'Y'
+      AND I.U_SubGrp1 NOT IN (
+          'ARISER SHIRT',
+          'UATHAYAM RDY',
+          'ARISER MENS TROUSERS'
+      )
+),
+prevM AS (
+    SELECT D.DocEntry, P.LogInst
+    FROM (SELECT DISTINCT DocEntry FROM curM) D
+    CROSS APPLY (
+        SELECT A.LogInst
+        FROM [BBLive].[dbo].[@AINS_OPLM] A
+        WHERE A.DocEntry = D.DocEntry
+        ORDER BY A.LogInst DESC
+        OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
+    ) P
+),
+-- ================= PRICE LIST SETUP =================
+curS AS (
+    SELECT T0.DocEntry, T0.UpdateDate,
+           T1.U_SubGroup1, T1.U_SubGroup4, T1.U_SubGroup7,
+           T3.U_UniqId, T3.U_Size,
+           CAST(T2.U_Code AS VARCHAR(50)) AS U_State,
+           T3.U_SelPrice, T3.U_MRP
+    FROM [BBLive].[dbo].[@INS_OPLSN] T0
+    INNER JOIN [BBLive].[dbo].[@INS_PLSN1] T1
+        ON T1.DocEntry = T0.DocEntry
+    INNER JOIN [BBLive].[dbo].[@INS_PLSN3] T3
+        ON T3.DocEntry = T0.DocEntry
+       AND T3.U_UniqId = T1.LineId
+    INNER JOIN [BBLive].[dbo].[@INS_PLSN2] T2
+        ON T2.DocEntry = T0.DocEntry
+       AND T2.U_Selected = 'Y'
+    WHERE T3.U_Lock <> 'Y'
+      AND T3.U_MRP > 0
+      AND T0.U_DocDate > '20260101'
+      AND T1.U_SubGroup1 IN (
+          'ARISER SHIRT',
+          'UATHAYAM RDY',
+          'ARISER MENS TROUSERS'
+      )
+),
+prevS AS (
+    SELECT D.DocEntry, P.LogInst
+    FROM (SELECT DISTINCT DocEntry FROM curS) D
+    CROSS APPLY (
+        SELECT A.LogInst
+        FROM [BBLive].[dbo].[@AINS_OPLSN] A
+        WHERE A.DocEntry = D.DocEntry
+        ORDER BY A.LogInst DESC
+        OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
+    ) P
+),
+chgS AS (
+    SELECT C.DocEntry, C.UpdateDate,
+           C.U_SubGroup1, C.U_SubGroup4, C.U_SubGroup7,
+           C.U_UniqId, C.U_Size, C.U_State, C.U_SelPrice, C.U_MRP,
+           O.U_SelPrice AS OldPrice,
+           O.U_MRP AS OldMRP
+    FROM curS C
+    INNER JOIN prevS V ON V.DocEntry = C.DocEntry
+    INNER JOIN [BBLive].[dbo].[@AINS_PLSN3] O
+        ON O.DocEntry = V.DocEntry
+       AND O.LogInst = V.LogInst
+       AND O.U_UniqId = C.U_UniqId
+       AND O.U_Size = C.U_Size
+    WHERE ISNULL(C.U_SelPrice, 0) <> ISNULL(O.U_SelPrice, 0)
+       OR ISNULL(C.U_MRP, 0) <> ISNULL(O.U_MRP, 0)
+)
+-- ================= COMBINE (only changed rows) =================
+SELECT 'Price List Master' AS Source,
+       C.U_ItemCode AS ItemCode,
+       C.U_ItemName AS ItemName,
+       C.U_SubGrp1 AS Brand,
+       CAST(C.U_State AS VARCHAR(50)) AS State,
+       CAST(C.U_SubGrp5 AS VARCHAR(50)) AS Size,
+       C.U_SelPrice AS Price,
+       C.U_MRP AS MRP,
+       O.U_SelPrice AS OldPrice,
+       O.U_MRP AS OldMRP,
+       'Price Changed' AS Remark,
+       C.DocEntry AS DocEntry,
+       C.UpdateDate,
+       C.LineId AS PriceID
+FROM curM C
+INNER JOIN prevM V ON V.DocEntry = C.DocEntry
+INNER JOIN [BBLive].[dbo].[@AINS_PLM2] O
+    ON O.DocEntry = V.DocEntry
+   AND O.LogInst = V.LogInst
+   AND O.U_RowId = C.U_RowId
+   AND O.U_State = C.U_State
+WHERE ISNULL(C.U_SelPrice, 0) <> ISNULL(O.U_SelPrice, 0)
+   OR ISNULL(C.U_MRP, 0) <> ISNULL(O.U_MRP, 0)
+
+UNION ALL
+
+SELECT 'Price List Setup',
+       I.ItemCode,
+       I.ItemName,
+       I.U_SubGrp1,
+       S.U_State,
+       CAST(S.U_Size AS VARCHAR(50)),
+       S.U_SelPrice,
+       S.U_MRP,
+       S.OldPrice,
+       S.OldMRP,
+       'Price Changed',
+       S.DocEntry,
+       S.UpdateDate,
+       S.U_UniqId
+FROM chgS S
+INNER JOIN [BBLive].[dbo].OITM I
+    ON I.U_SubGrp1 = S.U_SubGroup1
+   AND I.U_SubGrp4 = S.U_SubGroup4
+   AND I.U_SubGrp7 = S.U_SubGroup7
+   AND I.U_SubGrp5 = S.U_Size
+WHERE I.validFor = 'Y'
+
+ORDER BY Source, ItemCode, State
+OPTION (RECOMPILE);`;
+
+let priceListSyncPool = null;
 
 async function runPriceListApiSync() {
     if (priceListApiSyncRunning) {
@@ -212,12 +357,96 @@ async function runPriceListApiSync() {
     priceListApiSyncRunning = true;
     const startTime = Date.now();
     log.banner('PRICE LIST API SYNC START');
-    log.info('Job: runPriceListApiSync → syncController.syncPriceLists');
+    log.info('Job: runPriceListApiSync → changed-price query (Price List Master + Price List Setup)');
 
     try {
-        const { mockReq, mockRes, promise } = buildMockContext();
-        syncController.syncPriceLists(mockReq, mockRes);
-        const result = await promise;
+        // Same DB config as dbService, but a dedicated pool with a longer request
+        // timeout — the change-detection query exceeds mssql's 15s default.
+        let rows;
+        try {
+            if (!priceListSyncPool) {
+                priceListSyncPool = new sql.ConnectionPool({
+                    ...dbConfig,
+                    requestTimeout: parseInt(process.env.PRICE_LIST_SYNC_TIMEOUT_MS, 10) || 300000,
+                }).connect().catch((e) => { priceListSyncPool = null; throw e; });
+            }
+            const pool = await priceListSyncPool;
+            rows = (await pool.request().query(PRICE_LIST_CHANGES_QUERY)).recordset || [];
+        } catch (sqlErr) {
+            throw new Error(`SQL Error (PriceList changes): ${sqlErr.message}`);
+        }
+        log.info(`Fetched ${rows.length} changed price row(s) from DB`);
+
+        // De-duplicate on ItemCode + DocEntry + State, keeping the latest UpdateDate.
+        const unique  = new Map();
+        const skipped = [];
+        for (const r of rows) {
+            const itemCode = r.ItemCode != null ? String(r.ItemCode).trim() : '';
+            const state    = r.State    != null ? String(r.State).trim()    : '';
+            if (!itemCode || !state || r.DocEntry == null) {
+                skipped.push({ source: r.Source, itemCode, state, docEntry: r.DocEntry, reason: 'Missing ItemCode/State/DocEntry' });
+                continue;
+            }
+            if (r.Price == null || Number(r.Price) <= 0) {
+                skipped.push({ source: r.Source, itemCode, state, docEntry: r.DocEntry, reason: 'Price is NULL or 0' });
+                continue;
+            }
+            const key  = `${itemCode}|${r.DocEntry}|${state}`;
+            const prev = unique.get(key);
+            if (!prev || new Date(r.UpdateDate || 0) > new Date(prev.UpdateDate || 0)) {
+                unique.set(key, { ...r, ItemCode: itemCode, State: state });
+            }
+        }
+        const changes = Array.from(unique.values());
+        const bySource = changes.reduce((acc, r) => { acc[r.Source] = (acc[r.Source] || 0) + 1; return acc; }, {});
+
+        log.info(`  Unique changes  : ${changes.length} (duplicates removed: ${rows.length - skipped.length - changes.length})`);
+        log.info(`  Price List Master: ${bySource['Price List Master'] || 0} | Price List Setup: ${bySource['Price List Setup'] || 0}`);
+        if (skipped.length) log.warn(`  Skipped rows    : ${skipped.length} — ${JSON.stringify(skipped.slice(0, 10))}`);
+        changes.slice(0, 10).forEach(r =>
+            log.info(`  [${r.Source}] ${r.ItemCode} ${r.State} size=${r.Size ?? '-'} doc=${r.DocEntry} ` +
+                     `Price ${r.OldPrice ?? 'NULL'} → ${r.Price} | MRP ${r.OldMRP ?? 'NULL'} → ${r.MRP ?? 'NULL'}`)
+        );
+
+        let result;
+        if (!changes.length) {
+            result = { statusCode: 200, data: { message: 'No price changes found.', dbRowsFetched: rows.length, skipped: skipped.length } };
+        } else {
+            const payload = mapper.mapToPriceListPayload(changes.map(r => ({
+                ProductCode      : r.ItemCode,
+                PriceListID      : r.DocEntry,
+                SubBrandCode     : r.State,
+                BPProductName    : r.ItemName ?? r.ItemCode,
+                PriceListCode    : r.State,
+                EffectiveFrom    : null,
+                EffectiveTo      : null,
+                PriceListIsActive: 1,
+                BPCategory       : 'Dealer',
+                Price            : Number(r.Price),
+                MRP              : r.MRP != null ? Number(r.MRP) : 0,
+                PriceID          : r.PriceID ?? null,
+                PriceIsActive    : 1,
+            })));
+            log.info(`Mapped to ${payload.length} product price record(s)`);
+
+            const sfResult = await sfService.upsertPriceLists(payload);
+            result = {
+                statusCode: 200,
+                data: {
+                    message      : sfResult.failedBatches === 0
+                        ? 'PriceList Sync Completed Successfully'
+                        : 'PriceList Sync Completed with some batch failures',
+                    elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+                    mode          : 'changes',
+                    dbRowsFetched : rows.length,
+                    uniqueChanges : changes.length,
+                    bySource,
+                    skipped       : skipped.length,
+                    recordsSent   : payload.length,
+                    ...sfResult
+                }
+            };
+        }
 
         if (result.statusCode >= 200 && result.statusCode < 300) {
             log.ok(`Price List API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
@@ -649,9 +878,9 @@ function startCronJobs() {
         async () => { await runProductApiSync(); }
     );
 
-    // scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
-    //     async () => { await runPriceListApiSync(); }
-    // );
+    scheduleDaily(1, 0, 'Price List API Sync (01:00 AM IST)',
+        async () => { await runPriceListApiSync(); }
+    );
 
     scheduleDaily(2, 0, 'Business Partner API Sync (02:00 AM IST)',
         async () => { await runBusinessPartnerApiSync(); }

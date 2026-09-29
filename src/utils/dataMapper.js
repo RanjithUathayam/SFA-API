@@ -23,7 +23,7 @@ function mapToSalesforcePayload(rows) {
                 Product: {
                     ProductCode     : row.ProductCode,
                     ProductName     : row.ProductName,
-                    IsActive        : row.ProductIsActive,
+                    IsActive        : 1,
                     GroupCode       : row.ProductGroupCode,
                     ShortDesc       : row.ShortDesc,
                     DetailedDesc    : row.DetailedDesc,
