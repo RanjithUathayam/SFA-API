@@ -95,6 +95,13 @@ export const SYNC_CONFIG: SyncCardConfig[] = [
     recordKeyField: MASTER_CONFIG['outstanding'].recordKeyField, columns: MASTER_CONFIG['outstanding'].columns,
     cronNote: 'Manual trigger only — not on any automatic schedule.',
   },
+  {
+    key: 'invoice', title: 'AR Invoices', icon: '🧾',
+    desc: 'Push SAP A/R invoices (header + lines) to Salesforce InvoiceAPI. Sync All sends only invoices not yet pushed (Pending / Failed) from SF_INVOICE_SYNC_FROM_DATE to today.',
+    supportsSelection: true, masterType: 'invoice',
+    recordKeyField: MASTER_CONFIG['invoice'].recordKeyField, columns: MASTER_CONFIG['invoice'].columns,
+    cronNote: 'Manual by default. Set SF_INVOICE_SYNC_CRON in .env (e.g. */30 * * * *) to run it on a schedule.',
+  },
 ];
 
 function errStr(e: any): string {
@@ -107,7 +114,11 @@ function normalizeResult(raw: any, requestedCount?: number): SyncResult {
   if (Array.isArray(raw.failedDetails)) {
     for (const f of raw.failedDetails) {
       if (Array.isArray(f.codes) && f.codes.length) {
-        failedList.push(...f.codes.map((c: any) => `${c}: ${errStr(f.error)}`));
+        // Invoices carry docNums alongside DocEntry codes — show the invoice number
+        const labels = Array.isArray(f.docNums) && f.docNums.length === f.codes.length
+          ? f.codes.map((c: any, i: number) => `Invoice ${f.docNums[i]} (DocEntry ${c})`)
+          : f.codes;
+        failedList.push(...labels.map((c: any) => `${c}: ${errStr(f.error)}`));
       } else if (f.code) {
         failedList.push(`${f.code}: ${errStr(f.error)}`);
       } else if (f.policyNum || f.policyId) {

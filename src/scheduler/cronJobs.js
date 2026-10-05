@@ -61,6 +61,7 @@ let stockInventoryApiRunning = false;
 let productApiSyncRunning    = false;
 let priceListApiSyncRunning  = false;
 let bpApiSyncRunning         = false;
+let invoiceApiSyncRunning    = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stock inventory sync
@@ -546,6 +547,45 @@ async function runOutstandingSync() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Invoice API sync — reuses syncController.syncInvoices (same as the manual
+// POST /api/sync/invoice). Pushes only Pending/Failed invoices in the
+// SF_INVOICE_SYNC_FROM_DATE → today window. Scheduled only if
+// SF_INVOICE_SYNC_CRON is set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runInvoiceApiSync() {
+    if (invoiceApiSyncRunning) {
+        log.warn('Invoice API sync already in progress — skipping this tick.');
+        return;
+    }
+    invoiceApiSyncRunning = true;
+    const startTime = Date.now();
+    log.banner('INVOICE API SYNC START');
+
+    try {
+        const { mockReq, mockRes, promise } = buildMockContext();
+        mockReq.body = { onlyPending: true };
+        await syncController.syncInvoices(mockReq, mockRes);
+        const { statusCode, data } = await promise;
+
+        if (statusCode >= 400) {
+            log.error(`Invoice API Sync FAILED (HTTP ${statusCode}) after ${elapsed(startTime)}: ${data?.error ?? data?.message}`);
+        } else {
+            log.ok(`Invoice API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+            log.info(`  Invoices fetched : ${data?.dbRowsFetched ?? 0}`);
+            log.ok  (`  Succeeded        : ${data?.successRecords ?? 0}`);
+            if (data?.failedRecords > 0) log.error(`  Failed           : ${data.failedRecords}`);
+        }
+    } catch (err) {
+        log.error(`Invoice API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);
+        log.error(err.stack);
+    } finally {
+        invoiceApiSyncRunning = false;
+        log.banner('INVOICE API SYNC END');
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Attendance sync (Check-In at 14:00 IST, Check-Out at 23:30 IST)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -874,6 +914,14 @@ function startCronJobs() {
         async () => { await runStockInventoryApiSync(); }
     );
 
+    if (process.env.SF_INVOICE_SYNC_CRON) {
+        scheduleCron(process.env.SF_INVOICE_SYNC_CRON, `Invoice API Sync (${process.env.SF_INVOICE_SYNC_CRON})`,
+            async () => { await runInvoiceApiSync(); }
+        );
+    } else {
+        log.info('Invoice API Sync not scheduled (SF_INVOICE_SYNC_CRON is not set) — manual trigger only.');
+    }
+
     scheduleDaily(0, 30, 'Product API Sync (12:30 AM IST)',
         async () => { await runProductApiSync(); }
     );
@@ -932,4 +980,4 @@ process.on('uncaughtException', (err) => {
     log.error(err.stack);
 });
 
-module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync, runBusinessPartnerApiSync };
+module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync, runBusinessPartnerApiSync, runInvoiceApiSync };

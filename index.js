@@ -76,6 +76,7 @@ app.post('/api/sync/businesspartners',  syncController.syncBusinessPartners);
 app.post('/api/sync/businessPartnerTrigger', syncController.syncNextTriggeredBusinessPartner);
 app.post('/api/sync/stockInventory',    syncController.syncStockInventory);
 app.post('/api/sync/outstanding',       syncController.syncOutstanding);
+app.post('/api/sync/invoice',           syncController.syncInvoices);
 
 // ── Dashboard & push routes ────────────────────────────────────────────────
 app.get ('/api/dashboard/status', pushController.getDashboardStatus);
@@ -92,6 +93,7 @@ app.post('/api/products/push-all', productController.pushAllProducts);
 app.get ('/api/master/:masterType/list',     masterController.getMasterList);
 app.post('/api/master/:masterType/push',     masterController.pushMasterRecords);
 app.post('/api/master/:masterType/push-all', masterController.pushAllMasterRecords);
+app.get ('/api/master/:masterType/preview/:recordKey', masterController.previewMasterPayload);
 
 // ── Dedicated Price List routes (row-level, correct pricing source) ───────────
 app.get ('/api/pricelist/rows',   priceListController.getPriceListRows);
@@ -131,6 +133,7 @@ app.listen(PORT, () => {
     console.log(` - POST /api/sync/businessPartnerTrigger`);
     console.log(` - POST /api/sync/stockInventory`);
     console.log(` - POST /api/sync/outstanding`);
+    console.log(` - POST /api/sync/invoice`);
 
     startCronJobs();
 });

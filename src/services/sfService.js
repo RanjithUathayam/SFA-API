@@ -440,7 +440,6 @@ async function upsertSchemes(schemes) {
         const policyId  = scheme?.Policy?.PolicyID     ?? 'UNKNOWN';
 
         try {
-           console.log("*************url", url)
             const response = await withRetry(
                 () => axios.post(url, scheme, { headers, timeout: REQ_TIMEOUT }),
                 policyNum
@@ -790,6 +789,105 @@ async function upsertOutstanding(payload) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// INVOICES — POST { InvoiceHeader: [...] } to InvoiceAPI
+// Default 1 invoice per request so a bad invoice never blocks the others.
+// ─────────────────────────────────────────────────────────────────────────────
+const INVOICE_BATCH_SIZE  = parseInt(process.env.SF_BATCH_SIZE_INVOICE,  10) || 1;
+const INVOICE_CONCURRENCY = parseInt(process.env.SF_INVOICE_CONCURRENCY, 10) || CONCURRENCY;
+
+/**
+ * @param {Array<{key:string, docNum:number, invoice:object}>} items  from mapToInvoicePayload
+ * @param {{ onBatchResult?: (keys:string[], ok:boolean, error:string|null) => Promise<void> }} [opts]
+ *        called after every request so push status can be recorded as the sync progresses
+ */
+async function upsertInvoices(items, { onBatchResult } = {}) {
+    if (!Array.isArray(items) || items.length === 0) {
+        log.warn('upsertInvoices: nothing to send.');
+        return { totalRecords: 0, totalBatches: 0, successBatches: 0, failedBatches: 0, successRecords: 0, failedRecords: 0, failedDetails: [] };
+    }
+
+    const url = process.env.SF_API_URL_Invoice;
+    if (!url) throw new Error('SF_API_URL_Invoice is not set in .env');
+
+    const token   = process.env.SF_INVOICE_ACCESS_TOKEN || await getSalesforceToken();
+    const headers = {
+        'Content-Type': 'application/json',
+        Authorization : `Bearer ${token}`
+    };
+
+    const batches = [];
+    for (let i = 0; i < items.length; i += INVOICE_BATCH_SIZE) batches.push(items.slice(i, i + INVOICE_BATCH_SIZE));
+
+    const total      = items.length;
+    const totalBatch = batches.length;
+    const summary    = { success: [], failed: [] };
+
+    log.divider('INVOICE UPSERT START');
+    log.info(`Total invoices   : ${total}`);
+    log.info(`Per request      : ${INVOICE_BATCH_SIZE}`);
+    log.info(`Concurrency      : ${INVOICE_CONCURRENCY}`);
+    log.info(`Endpoint         : ${url}`);
+    log.divider();
+
+    const report = async (keys, ok, error) => {
+        if (!onBatchResult) return;
+        try { await onBatchResult(keys, ok, error); }
+        catch (e) { log.warn(`Invoice status write failed for ${keys.join(',')}: ${e.message}`); }
+    };
+
+    const tasks = batches.map((batch, idx) => async () => {
+        const batchNum = idx + 1;
+        const keys     = batch.map(b => b.key);
+        const docNums  = batch.map(b => b.docNum);
+        const label    = `INVOICE ${docNums.join(',')}`;
+        const body     = { InvoiceHeader: batch.map(b => b.invoice) };
+
+        try {
+            const response = await withRetry(
+                () => axios.post(url, body, { headers, timeout: REQ_TIMEOUT }),
+                label
+            );
+            verifySFResponse(response, label);
+            summary.success.push({ batch: batchNum, count: batch.length, codes: keys, docNums, status: response.status, data: response.data });
+            log.ok(`[${summary.success.length + summary.failed.length}/${totalBatch}] ${label} — HTTP ${response.status} OK`);
+            await report(keys, true, null);
+
+        } catch (err) {
+            const status = err.response?.status ?? 'N/A';
+            const error  = err.response?.data   ?? err.message;
+            summary.failed.push({ batch: batchNum, count: batch.length, codes: keys, docNums, status, error });
+            log.error(`[${summary.success.length + summary.failed.length}/${totalBatch}] ${label} — HTTP ${status} FAILED`);
+            log.error(`  Detail: ${JSON.stringify(error)}`);
+            await report(keys, false, typeof error === 'string' ? error : JSON.stringify(error));
+        }
+
+        const done = summary.success.length + summary.failed.length;
+        if (done % 10 === 0 || done === totalBatch) log.progress(done, totalBatch, 'invoice requests');
+    });
+
+    await runWithConcurrency(tasks, INVOICE_CONCURRENCY);
+
+    const successRecords = summary.success.reduce((n, b) => n + b.count, 0);
+    const failedRecords  = summary.failed.reduce((n, b) => n + b.count, 0);
+
+    log.divider('INVOICE UPSERT SUMMARY');
+    log.info(`Total Sent : ${total}`);
+    log.ok  (`Success    : ${successRecords}`);
+    if (failedRecords > 0) log.error(`Failed     : ${failedRecords}`);
+    log.divider();
+
+    return {
+        totalRecords  : total,
+        totalBatches  : totalBatch,
+        successBatches: summary.success.length,
+        failedBatches : summary.failed.length,
+        successRecords,
+        failedRecords,
+        failedDetails : summary.failed.map(({ batch, codes, docNums, status, error }) => ({ batch, codes, docNums, status, error }))
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ATTENDANCE — Fetch from dmpl__ResourceAvailabilityData__c
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -853,5 +951,6 @@ module.exports = {
     upsertBusinessPartners,
     upsertStockInventory,
     upsertOutstanding,
+    upsertInvoices,
     fetchAttendanceRecords
 };

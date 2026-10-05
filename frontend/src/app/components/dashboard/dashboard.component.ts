@@ -54,6 +54,12 @@ export class DashboardComponent {
       link: '/master/outstanding',
     },
     {
+      icon: '🧾',
+      title: 'AR Invoices',
+      desc: 'View SAP A/R invoices by date, preview the exact JSON, and push invoices with line items to Salesforce.',
+      link: '/master/invoice',
+    },
+    {
       icon: '👨‍💼',
       title: 'E-HR Attendance',
       desc: 'Monitor attendance punch logs and manually trigger SF→DB sync and DB→EHR API push.',
@@ -62,7 +68,7 @@ export class DashboardComponent {
     {
       icon: '🔄',
       title: 'Sync Center',
-      desc: 'Trigger bulk Salesforce sync for products, price lists, images, schemes, BPs, stock and outstanding — sync all or select specific records.',
+      desc: 'Trigger bulk Salesforce sync for products, price lists, images, schemes, BPs, stock, outstanding and invoices — sync all or select specific records.',
       link: '/sync',
     },
   ];

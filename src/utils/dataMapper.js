@@ -484,6 +484,80 @@ function mapToOutstandingPayload(rows) {
     }));
 }
 
+// mssql reads SQL datetime values as UTC, so the ISO string holds the SAP value as-is
+// → "2026-09-08T00:00:00" (InvoiceAPI format)
+function formatSapDateTime(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1900) return null;
+    return date.toISOString().slice(0, 19);
+}
+
+// Returns [{ key: DocEntry, docNum, invoice }] — key/docNum are for status tracking only;
+// `invoice` is the object that goes inside { InvoiceHeader: [...] }
+function mapToInvoicePayload(rows) {
+    if (!rows || rows.length === 0) return [];
+
+    return rows.map(row => ({
+        key   : String(row.DocEntry),
+        docNum: row.DocNum,
+        invoice: {
+            SaleOrderNumber : row.SaleOrderNumber ?? '',
+            DivisionName      : row.DivisionName ?? '',
+            DocEntry          : row.DocEntry ?? '',
+            Cardcode          : row.Cardcode,
+            CardName          : row.CardName,
+            DocNum            : Number(row.DocNum),
+            DocDate           : formatSapDateTime(row.DocDate),
+            DocDueDate        : formatSapDateTime(row.DocDueDate),
+            DocTotal          : toNumber(row.DocTotal) ?? 0,
+            DocDiscount       : toNumber(row.DocDiscount) ?? 0,
+            TaxAmount         : toNumber(row.TaxAmount) ?? 0,
+            Brand             : row.Brand ?? '',
+            IRNNo             : row.IRNNo ?? '',
+            EwayBillNo        : row.EwayBillNo ?? '',
+            OrderRemarks      : row.OrderRemarks ?? '',
+            CustomerReference : row.CustomerReference ?? '',
+            TransporterName   : row.TransporterName ?? '',
+            Destination       : row.Destination ?? '',
+            Lrno              : row.Lrno ?? '',
+            LrDate            : formatSapDateTime(row.LrDate),
+            LrWgt             : toNumber(row.LrWgt) ?? 0,
+            LRPassType        : row.LRPassType ?? '',
+            FreightAmount     : toNumber(row.FreightAmount) ?? 0,
+            TotalQuantity     : toNumber(row.TotalQuantity) ?? 0,
+            AreaCode          : row.AreaCode ?? '',
+            NoofBundle        : String(row.NoofBundle ?? 0),
+            RoundDif          : toNumber(row.RoundDif) ?? 0,
+            BilltoID          : row.BilltoID ?? '',
+            ShiptoID          : row.ShiptoID ?? '',
+            GSTIN             : row.GSTIN ?? '',
+            DocType           : row.DocType ?? 'I',
+            InvoiceDetail     : (row.Lines || []).map(l => ({
+                LineNum             : Number(l.LineNum),
+                Itemcode            : l.Itemcode,
+                CatalogName         : l.CatalogName ?? '',
+                HSNCODE             : l.HSNCODE ?? '',
+                Style               : l.Style ?? '',
+                Size                : l.Size ?? '',
+                ColorCode           : l.ColorCode ?? '',
+                PriceBeforeDisc     : toNumber(l.PriceBeforeDisc) ?? 0,
+                Price               : toNumber(l.Price) ?? 0,
+                Quantity            : toNumber(l.Quantity) ?? 0,
+                PackageQuantity     : toNumber(l.PackageQuantity) ?? 0,
+                MRP                 : toNumber(l.MRP) ?? 0,
+                DiscPrcnt           : toNumber(l.DiscPrcnt) ?? 0,
+                DiscountAmount      : toNumber(l.DiscountAmount) ?? 0,
+                TaxCode             : l.TaxCode ?? '',
+                TaxPer              : toNumber(l.TaxPer) ?? 0,
+                TaxAmount           : toNumber(l.TaxAmount) ?? 0,
+                LineTotalWithoutTax : toNumber(l.LineTotalWithoutTax) ?? 0,
+                LineTotalWithTax    : toNumber(l.LineTotalWithTax) ?? 0
+            }))
+        }
+    }));
+}
+
 module.exports = {
     mapToSalesforcePayload,
     mapToPriceListPayload,
@@ -493,5 +567,6 @@ module.exports = {
     groupByProduct,
     buildPayload,
     mapToStockPayload,
-    mapToOutstandingPayload
+    mapToOutstandingPayload,
+    mapToInvoicePayload
 };

@@ -34,6 +34,10 @@ export class ApiService {
     return this.http.post(`/api/master/${type}/push-all`, filters);
   }
 
+  previewMaster(type: string, recordKey: string): Observable<any> {
+    return this.http.get(`/api/master/${type}/preview/${encodeURIComponent(recordKey)}`);
+  }
+
   runSync(type: string, codes?: string[]): Observable<any> {
     return this.http.post(`/api/sync/${type}`, codes && codes.length ? { codes } : {});
   }

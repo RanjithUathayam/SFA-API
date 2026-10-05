@@ -27,6 +27,10 @@
 <!-- Toolbar -->
 <div class="toolbar">
   <input type="text" [(ngModel)]="searchInput" (input)="onSearchInput()" placeholder="Search…" />
+  @if (cfg.hasDateFilter) {
+    <label class="date-field">From <input type="date" [(ngModel)]="fromDate" (change)="onDateChange()" /></label>
+    <label class="date-field">To <input type="date" [(ngModel)]="toDate" (change)="onDateChange()" /></label>
+  }
   @if (cfg.hasProductGroupFilter) {
     <app-group-filter
       [options]="productGroups"
@@ -67,7 +71,7 @@
         <th>Push Status</th>
         <th>Last Pushed</th>
         <th>Last Error</th>
-        <th style="width:80px">Action</th>
+        <th [style.width]="cfg.previewable ? '140px' : '80px'">Action</th>
       </tr>
     </thead>
     <tbody>
@@ -116,7 +120,10 @@
               <span class="text-muted">—</span>
             }
           </td>
-          <td>
+          <td class="action-cell">
+            @if (cfg.previewable) {
+              <button class="push-btn push-btn-ghost" title="View the JSON sent to Salesforce" (click)="openPreview(row)">JSON</button>
+            }
             <button class="push-btn"
               [disabled]="isKeyPushing(getKey(row))"
               (click)="pushSingle(getKey(row))">
@@ -165,6 +172,34 @@
         }
       </div>
     }
+  </div>
+}
+
+<!-- Payload preview -->
+@if (preview) {
+  <div class="modal-overlay" (click)="closePreview()">
+    <div class="modal-panel" (click)="$event.stopPropagation()">
+      <div class="modal-head">
+        <div>
+          <div class="modal-title">{{ cfg.icon }} Salesforce payload — {{ preview.label }}</div>
+          <div class="modal-sub">Exact JSON body that will be sent to Salesforce. Nothing is sent from this view.</div>
+        </div>
+        <button class="modal-close" (click)="closePreview()">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        @if (preview.loading) {
+          <div class="empty-state">Loading…</div>
+        } @else if (preview.error) {
+          <div class="empty-state preview-error">{{ preview.error }}</div>
+        } @else {
+          <pre class="json">{{ preview.json }}</pre>
+        }
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" [disabled]="!preview.json" (click)="copyPreview()">Copy JSON</button>
+        <button class="btn btn-primary" [disabled]="preview.loading || !!preview.error || isKeyPushing(preview.key)" (click)="pushFromPreview()">&#8679; Push to Salesforce</button>
+      </div>
+    </div>
   </div>
 }
 

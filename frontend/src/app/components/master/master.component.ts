@@ -22,6 +22,8 @@ export interface MasterConfig {
   recordKeyField: string;
   columns: ColumnDef[];
   hasProductGroupFilter?: boolean;
+  hasDateFilter?: boolean;     // From/To date inputs → fromDate/toDate query params
+  previewable?: boolean;       // per-row "JSON" button → GET /api/master/:type/preview/:key
 }
 
 function fmtNum(v: any): string {
@@ -95,10 +97,26 @@ export const MASTER_CONFIG: Record<string, MasterConfig> = {
       { key: 'MaxOverdueDays', label: 'Max Overdue Days',align: 'right' },
     ],
   },
+  invoice: {
+    title: 'AR Invoices', desc: 'View SAP A/R invoices for dealer customers by date, track push status, and push to Salesforce InvoiceAPI.',
+    icon: '🧾', recordKeyField: 'DocEntry', hasDateFilter: true, previewable: true,
+    columns: [
+      { key: 'DocNum',        label: 'Invoice No', cls: 'mono' },
+      { key: 'DocDate',       label: 'Date' },
+      { key: 'CardCode',      label: 'Card Code',  cls: 'mono' },
+      { key: 'CardName',      label: 'Customer' },
+      { key: 'Brand',         label: 'Brand' },
+      { key: 'DivisionName',  label: 'Division' },
+      { key: 'LineCount',     label: 'Lines',      align: 'right' },
+      { key: 'TotalQuantity', label: 'Qty',        align: 'right' },
+      { key: 'DocTotal',      label: 'Doc Total',  align: 'right', fmt: fmtNum },
+    ],
+  },
 };
 
 interface Summary { Pending?: number; Pushing?: number; Pushed?: number; Failed?: number; }
 interface Toast    { id: number; message: string; type: 'success'|'error'|'info'; }
+interface Preview  { key: string; label: string; loading: boolean; json?: string; error?: string; }
 interface PushResult {
   successCount?: number; failedCount?: number; totalRequested?: number;
   failedRecords?: Array<{ key: string; error: any }>;
@@ -126,6 +144,10 @@ export class MasterComponent implements OnInit, OnDestroy {
   statusFilter = '';
   productGroupFilter = '';
   productGroups: string[] = [];
+  fromDate = '';
+  toDate = '';
+
+  preview: Preview | null = null;
 
   selectedKeys = new Set<string>();
   pushingKeys  = new Set<string>();
@@ -166,6 +188,7 @@ export class MasterComponent implements OnInit, OnDestroy {
   private resetState() {
     this.records = []; this.summary = {}; this.totalRecords = 0; this.totalPages = 1;
     this.currentPage = 1; this.searchInput = ''; this.statusFilter = ''; this.productGroupFilter = '';
+    this.fromDate = ''; this.toDate = ''; this.preview = null;
     this.selectedKeys.clear(); this.pushingKeys.clear();
     this.showResultPanel = false; this.resultPanel = null;
     clearTimeout(this.pollTimer);
@@ -192,6 +215,8 @@ export class MasterComponent implements OnInit, OnDestroy {
     if (this.searchInput)        params['search']       = this.searchInput;
     if (this.statusFilter)       params['pushStatus']    = this.statusFilter;
     if (this.productGroupFilter) params['productGroup']  = this.productGroupFilter;
+    if (this.cfg.hasDateFilter && this.fromDate) params['fromDate'] = this.fromDate;
+    if (this.cfg.hasDateFilter && this.toDate)   params['toDate']   = this.toDate;
 
     this.api.getMasterList(this.masterType, params).subscribe({
       next: (data) => {
@@ -200,6 +225,11 @@ export class MasterComponent implements OnInit, OnDestroy {
         this.totalPages  = data.totalPages;
         this.totalRecords = data.total;
         this.summary      = data.summary || {};
+        // Show the server's default window (SF_INVOICE_SYNC_FROM_DATE → today) in the date inputs
+        if (data.window) {
+          if (!this.fromDate) this.fromDate = data.window.fromDate;
+          if (!this.toDate)   this.toDate   = data.window.toDate;
+        }
 
         this.records.forEach(r => {
           const key = String(r[this.cfg.recordKeyField]);
@@ -223,6 +253,15 @@ export class MasterComponent implements OnInit, OnDestroy {
   }
 
   onPageLimitChange() { this.loadPage(1); }
+
+  onDateChange() {
+    if (this.fromDate && this.toDate && this.fromDate > this.toDate) {
+      this.showToast('From date must be on or before To date.', 'error');
+      return;
+    }
+    this.selectedKeys.clear();
+    this.loadPage(1);
+  }
 
   goToPage(page: number) {
     if (page < 1 || page > this.totalPages) return;
@@ -304,6 +343,8 @@ export class MasterComponent implements OnInit, OnDestroy {
     if (this.searchInput)        body['search']       = this.searchInput;
     if (this.statusFilter)       body['pushStatus']    = this.statusFilter;
     if (this.productGroupFilter) body['productGroup']  = this.productGroupFilter;
+    if (this.cfg.hasDateFilter && this.fromDate) body['fromDate'] = this.fromDate;
+    if (this.cfg.hasDateFilter && this.toDate)   body['toDate']   = this.toDate;
 
     this.api.pushAllMaster(this.masterType, body).subscribe({
       next: (data) => {
@@ -317,6 +358,41 @@ export class MasterComponent implements OnInit, OnDestroy {
       error: (err) => this.showToast('Push-All failed: ' + err.message, 'error'),
       complete: () => { this.loading = false; },
     });
+  }
+
+  openPreview(row: any) {
+    const key = this.getKey(row);
+    const label = row.DocNum != null ? `Invoice ${row.DocNum}` : key;
+    this.preview = { key, label, loading: true };
+    this.api.previewMaster(this.masterType, key).subscribe({
+      next: (data) => {
+        if (this.preview?.key !== key) return;
+        this.preview = data.success
+          ? { key, label, loading: false, json: JSON.stringify(data.payload, null, 2) }
+          : { key, label, loading: false, error: data.error };
+      },
+      error: (err) => {
+        if (this.preview?.key !== key) return;
+        this.preview = { key, label, loading: false, error: err.error?.error || err.message };
+      },
+    });
+  }
+
+  closePreview() { this.preview = null; }
+
+  copyPreview() {
+    if (!this.preview?.json) return;
+    navigator.clipboard.writeText(this.preview.json).then(
+      () => this.showToast('Payload copied to clipboard.', 'success'),
+      () => this.showToast('Copy failed — select the text and copy manually.', 'error'),
+    );
+  }
+
+  pushFromPreview() {
+    if (!this.preview) return;
+    const key = this.preview.key;
+    this.closePreview();
+    this.pushSingle(key);
   }
 
   showResult(data: any) {

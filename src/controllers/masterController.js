@@ -108,6 +108,29 @@ const MASTERS = {
             };
         },
     },
+
+    invoice: {
+        masterType:    'invoice',
+        recordKeyField: 'DocEntry',
+        fetchPaged:    (opts)  => dbService.getInvoicesPaged(opts),
+        fetchByCodes:  (codes) => dbService.getInvoiceData({ docEntries: codes }),
+        mapPayload:    (rows)  => mapper.mapToInvoicePayload(rows),
+        sfPush:        (pl)    => sfService.upsertInvoices(pl),
+        // Exact JSON body POSTed to InvoiceAPI for one invoice
+        previewBody:   (pl)    => ({ InvoiceHeader: pl.map(p => p.invoice) }),
+        // failedDetails: [{batch, codes:[DocEntry], docNums, error}]
+        extractResults(sfResult, requestedKeys) {
+            const failedMap = {};
+            for (const f of (sfResult.failedDetails || [])) {
+                const err = typeof f.error === 'string' ? f.error : JSON.stringify(f.error);
+                for (const code of (f.codes || [])) failedMap[String(code)] = err;
+            }
+            return {
+                success: requestedKeys.map(String).filter(k => !failedMap[k]),
+                failed:  Object.entries(failedMap).map(([k, e]) => ({ key: k, error: e })),
+            };
+        },
+    },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,8 +149,10 @@ exports.getMasterList = async (req, res) => {
         const search       = req.query.search       || null;
         const pushStatus   = req.query.pushStatus   || null;
         const productGroup = req.query.productGroup || null;
+        const fromDate     = req.query.fromDate     || null;
+        const toDate       = req.query.toDate       || null;
 
-        const result = await cfg.fetchPaged({ page, limit, search, pushStatus, productGroup });
+        const result = await cfg.fetchPaged({ page, limit, search, pushStatus, productGroup, fromDate, toDate });
         return res.status(200).json({ success: true, ...result });
     } catch (err) {
         console.error(`[masterController] getMasterList (${req.params.masterType}) error:`, err.message);
@@ -202,7 +227,7 @@ exports.pushAllMasterRecords = async (req, res) => {
     const cfg = MASTERS[req.params.masterType];
     if (!cfg) return res.status(404).json({ success: false, error: 'Unknown master type' });
 
-    const { search, pushStatus, productGroup } = req.body;
+    const { search, pushStatus, productGroup, fromDate, toDate } = req.body;
 
     res.status(200).json({
         success: true,
@@ -211,16 +236,27 @@ exports.pushAllMasterRecords = async (req, res) => {
 
     (async () => {
         const PAGE = 100;
-        let page   = 1;
-        let total  = Infinity;
 
-        while ((page - 1) * PAGE < total) {
-            try {
-                const result = await cfg.fetchPaged({ page, limit: PAGE, search, pushStatus, productGroup });
+        // Collect every matching key up front — pushing while paging through a
+        // status-filtered list shifts later pages and skips records.
+        const allKeys = [];
+        try {
+            let page  = 1;
+            let total = Infinity;
+            while ((page - 1) * PAGE < total) {
+                const result = await cfg.fetchPaged({ page, limit: PAGE, search, pushStatus, productGroup, fromDate, toDate });
                 total = result.total;
                 if (!result.data.length) break;
+                allKeys.push(...result.data.map(r => r[cfg.recordKeyField]));
+                page++;
+            }
+        } catch (err) {
+            console.error(`[pushAll:${cfg.masterType}] key collection error:`, err.message);
+        }
 
-                const keys = result.data.map(r => r[cfg.recordKeyField]);
+        for (let page = 1; (page - 1) * PAGE < allKeys.length; page++) {
+            try {
+                const keys = allKeys.slice((page - 1) * PAGE, page * PAGE);
                 await recordPushSvc.setManyPushing(cfg.masterType, keys);
 
                 const rows    = await cfg.fetchByCodes(keys);
@@ -237,8 +273,26 @@ exports.pushAllMasterRecords = async (req, res) => {
             } catch (err) {
                 console.error(`[pushAll:${cfg.masterType}] page ${page} error:`, err.message);
             }
-            page++;
         }
         console.log(`[pushAll:${cfg.masterType}] background job complete`);
     })();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/master/:masterType/preview/:recordKey
+// Returns the exact JSON body that would be POSTed to Salesforce (no push).
+// Only for masters that define previewBody.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.previewMasterPayload = async (req, res) => {
+    const cfg = MASTERS[req.params.masterType];
+    if (!cfg || !cfg.previewBody) return res.status(404).json({ success: false, error: 'Preview not available for this master type' });
+
+    try {
+        const rows = await cfg.fetchByCodes([req.params.recordKey]);
+        if (!rows.length) return res.status(404).json({ success: false, error: 'Record not found in DB' });
+        return res.status(200).json({ success: true, payload: cfg.previewBody(cfg.mapPayload(rows)) });
+    } catch (err) {
+        console.error(`[masterController] previewMasterPayload (${req.params.masterType}) error:`, err.message);
+        return res.status(500).json({ success: false, error: err.message });
+    }
 };

@@ -2512,6 +2512,316 @@ async function upsertEhrTriggerLog(jobKey, punchType, triggeredAt, status, compl
         `);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// INVOICES — OINV / INV1 → Salesforce InvoiceAPI
+// Push status lives in SFA_RecordPushStatus with MasterType='invoice' and
+// RecordKey = OINV.DocEntry (DocNum repeats across numbering series).
+// ─────────────────────────────────────────────────────────────────────────────
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function todayIst() {
+    // en-CA formats as YYYY-MM-DD
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+// Explicit dates win, then SF_INVOICE_SYNC_FROM_DATE / _TO_DATE, then today (IST)
+function resolveInvoiceWindow({ fromDate, toDate } = {}) {
+    const pick = (v, envVal) => DATE_RE.test(v || '') ? v : DATE_RE.test(envVal || '') ? envVal : todayIst();
+    return {
+        fromDate: pick(fromDate, process.env.SF_INVOICE_SYNC_FROM_DATE),
+        toDate  : pick(toDate,   process.env.SF_INVOICE_SYNC_TO_DATE),
+    };
+}
+
+function invoiceRepushOnUpdate() {
+    return String(process.env.SF_INVOICE_REPUSH_ON_UPDATE).toLowerCase() === 'true' ? 1 : 0;
+}
+
+// Effective status: no row → Pending; 'Pushing' stuck > 30 min → Pending;
+// 'Pushed' but edited in SAP afterwards (UpdateDate + UpdateTS HHMMSS) → Pending
+// when SF_INVOICE_REPUSH_ON_UPDATE=true.
+const INVOICE_BASE_FROM = `
+    FROM [BBLive].[dbo].[OINV] T1 WITH (NOLOCK)
+    INNER JOIN [BBLive].[dbo].[OCRD] T5 WITH (NOLOCK)
+        ON T5.CardCode = T1.CardCode
+       AND T5.U_showcode = 'DE'
+    LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
+        ON rp.MasterType = 'invoice'
+       AND rp.RecordKey  = CAST(T1.DocEntry AS NVARCHAR(100))
+    CROSS APPLY (
+        SELECT CASE
+            WHEN rp.PushStatus IS NULL THEN 'Pending'
+            WHEN rp.PushStatus = 'Pushing' AND rp.UpdatedAt < DATEADD(MINUTE, -30, GETDATE()) THEN 'Pending'
+            WHEN rp.PushStatus = 'Pushed' AND @repush = 1
+                 AND DATEADD(SECOND,
+                         (ISNULL(T1.UpdateTS, 0) / 10000) * 3600
+                       + (ISNULL(T1.UpdateTS, 0) / 100 % 100) * 60
+                       +  ISNULL(T1.UpdateTS, 0) % 100,
+                         T1.UpdateDate) > rp.UpdatedAt THEN 'Pending'
+            ELSE rp.PushStatus
+        END AS PushStatus
+    ) ST`;
+
+const INVOICE_DATE_FILTER = `
+    T1.DocDate >= CAST(@fromDate AS DATE)
+    AND T1.DocDate < DATEADD(DAY, 1, CAST(@toDate AS DATE))`;
+
+async function getInvoicesPaged({ page = 1, limit = 50, search, pushStatus, fromDate, toDate } = {}) {
+    const pool      = await getPool();
+    const offset    = (page - 1) * limit;
+    const searchVal = search     ? `%${search}%` : null;
+    const statusVal = pushStatus || null;
+    const window    = resolveInvoiceWindow({ fromDate, toDate });
+    const repush    = invoiceRepushOnUpdate();
+
+    const dataQuery = `
+        WITH Inv AS (
+            SELECT
+                T1.DocEntry, T1.DocNum, T1.DocDate, T1.CardCode, T1.CardName,
+                T1.U_Brand AS Brand, T1.BPLId, T1.DocTotal,
+                ST.PushStatus, rp.LastPushedAt, rp.ErrorMessage AS PushError
+            ${INVOICE_BASE_FROM}
+            WHERE ${INVOICE_DATE_FILTER}
+              AND (@search IS NULL
+                   OR T1.CardCode LIKE @search
+                   OR T1.CardName LIKE @search
+                   OR T1.U_Brand  LIKE @search
+                   OR CAST(T1.DocNum AS NVARCHAR(20)) LIKE @search)
+        ),
+        Paged AS (
+            SELECT COUNT(*) OVER() AS TotalCount, *
+            FROM Inv
+            WHERE (@pushStatus IS NULL OR PushStatus = @pushStatus)
+            ORDER BY DocDate DESC, DocEntry DESC
+            OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+        )
+        SELECT
+            P.TotalCount,
+            CAST(P.DocEntry AS NVARCHAR(20))            AS DocEntry,
+            P.DocNum,
+            CONVERT(CHAR(10), P.DocDate, 23)            AS DocDate,
+            P.CardCode, P.CardName,
+            ISNULL(P.Brand, '')                         AS Brand,
+            ISNULL(BR.BPLName, '')                      AS DivisionName,
+            ISNULL(L.LineCount, 0)                      AS LineCount,
+            CAST(ISNULL(L.TotalQuantity, 0) AS DECIMAL(18,2)) AS TotalQuantity,
+            CAST(P.DocTotal AS DECIMAL(18,2))           AS DocTotal,
+            P.PushStatus, P.LastPushedAt, P.PushError
+        FROM Paged P
+        LEFT JOIN [BBLive].[dbo].[OBPL] BR WITH (NOLOCK) ON BR.BPLId = P.BPLId
+        OUTER APPLY (
+            SELECT COUNT(*) AS LineCount, SUM(I.Quantity) AS TotalQuantity
+            FROM [BBLive].[dbo].[INV1] I WITH (NOLOCK)
+            WHERE I.DocEntry = P.DocEntry
+        ) L
+        ORDER BY P.DocDate DESC, P.DocEntry DESC
+    `;
+
+    const summaryQuery = `
+        SELECT ST.PushStatus, COUNT(*) AS Count
+        ${INVOICE_BASE_FROM}
+        WHERE ${INVOICE_DATE_FILTER}
+        GROUP BY ST.PushStatus
+    `;
+
+    const withWindow = (r) => r
+        .input('fromDate', sql.NVarChar(10), window.fromDate)
+        .input('toDate',   sql.NVarChar(10), window.toDate)
+        .input('repush',   sql.Bit,          repush);
+
+    const [dataRes, summaryRes] = await Promise.all([
+        withWindow(pool.request())
+            .input('search',     sql.NVarChar(200), searchVal)
+            .input('pushStatus', sql.NVarChar(20),  statusVal)
+            .input('offset',     sql.Int,           offset)
+            .input('limit',      sql.Int,           limit)
+            .query(dataQuery),
+        withWindow(pool.request()).query(summaryQuery),
+    ]);
+
+    const records = dataRes.recordset;
+    const total   = records.length > 0 ? records[0].TotalCount : 0;
+    const summaryMap = { Pending: 0, Pushing: 0, Pushed: 0, Failed: 0 };
+    for (const row of summaryRes.recordset) summaryMap[row.PushStatus] = row.Count;
+
+    return {
+        data:       records.map(({ TotalCount, ...rest }) => rest),
+        total, page, limit,
+        totalPages: Math.ceil(total / limit),
+        summary:    summaryMap,
+        window,
+    };
+}
+
+/**
+ * Full invoice header + lines for the Salesforce payload.
+ *  - docEntries given → exactly those invoices (date window / status ignored)
+ *  - otherwise        → invoices in the date window; onlyPending limits to Pending/Failed
+ * Returns header rows, each with a `Lines` array.
+ */
+async function getInvoiceData({ docEntries, fromDate, toDate, onlyPending = false } = {}) {
+    const keys = Array.isArray(docEntries)
+        ? [...new Set(docEntries.map(k => parseInt(k, 10)).filter(Number.isInteger))]
+        : null;
+    if (keys && keys.length === 0) return [];
+
+    // Stay well under SQL Server's 2100-parameter limit
+    const CHUNK = 1000;
+    if (keys && keys.length > CHUNK) {
+        const out = [];
+        for (let i = 0; i < keys.length; i += CHUNK) {
+            out.push(...await getInvoiceData({ docEntries: keys.slice(i, i + CHUNK) }));
+        }
+        return out;
+    }
+
+    const pool   = await getPool();
+    const req    = pool.request();
+    const window = resolveInvoiceWindow({ fromDate, toDate });
+
+    req.input('fromDate',    sql.NVarChar(10), window.fromDate)
+       .input('toDate',      sql.NVarChar(10), window.toDate)
+       .input('repush',      sql.Bit,          invoiceRepushOnUpdate())
+       .input('onlyPending', sql.Bit,          !keys && onlyPending ? 1 : 0);
+
+    let filter = INVOICE_DATE_FILTER;
+    if (keys) {
+        const placeholders = keys.map((k, i) => { req.input(`k${i}`, sql.Int, k); return `@k${i}`; }).join(',');
+        filter = `T1.DocEntry IN (${placeholders})`;
+    }
+
+    const query = `
+        SET NOCOUNT ON;
+
+        DROP TABLE IF EXISTS #InvoiceHeader;
+        DROP TABLE IF EXISTS #InvoiceLines;
+
+        ------------------------------------------------------------
+        -- 1. REQUIRED INVOICES
+        ------------------------------------------------------------
+        SELECT
+            T1.DocEntry, T1.CardCode, T1.CardName, T1.DocNum, T1.DocDate, T1.DocDueDate,
+            T1.DocTotal, T1.DiscSum, T1.VatSum, T1.U_Brand,
+            CAST(T1.U_IRN     AS NVARCHAR(MAX)) AS U_IRN,
+            CAST(T1.U_BStatus AS NVARCHAR(MAX)) AS U_BStatus,
+            T1.Comments, T1.NumAtCard, T1.U_Transport, T1.U_Dsnation, T1.U_Lrno, T1.U_LrDat,
+            T1.U_Lrwight, T1.U_Pass, T1.TotalExpns, T1.U_Arcode, T1.U_Noofbun, T1.RoundDif,
+            T1.PayToCode, T1.ShipToCode, T1.BPLId,
+            T1.NumAtCard AS SaleOrderNumber,
+            ISNULL(T1.DocType, 'I') AS DocType
+        INTO #InvoiceHeader
+        ${INVOICE_BASE_FROM}
+        WHERE ${filter}
+          AND (@onlyPending = 0 OR ST.PushStatus IN ('Pending', 'Failed'));
+
+        CREATE CLUSTERED INDEX IX_InvoiceHeader_DocEntry ON #InvoiceHeader (DocEntry);
+
+        ------------------------------------------------------------
+        -- 2. INV1 ROWS FOR THESE INVOICES
+        ------------------------------------------------------------
+        SELECT
+            T0.DocEntry, T0.LineNum, T0.ItemCode, T0.Dscription, T0.PriceBefDi, T0.Price,
+            T0.Quantity, T0.PackQty, T0.U_MRP, T0.DiscPrcnt, T0.VatGroup, T0.VatPrcnt,
+            T0.VatSum, T0.LineTotal,
+            ISNULL(T2.U_SubGrp7, T0.Dscription) AS CatalogName,
+            ISNULL(T2.U_HSNCODE, '')            AS HSNCODE,
+            ISNULL(T2.U_Style,   '')            AS Style,
+            ISNULL(T2.U_SUBGRP5, '')            AS Size,
+            ISNULL(T2.U_SubGrp6, '')            AS ColorCode
+        INTO #InvoiceLines
+        FROM [BBLive].[dbo].[INV1] T0 WITH (NOLOCK)
+        INNER JOIN #InvoiceHeader H ON H.DocEntry = T0.DocEntry
+        LEFT JOIN [BBLive].[dbo].[OITM] T2 WITH (NOLOCK) ON T2.ItemCode = T0.ItemCode;
+
+        CREATE CLUSTERED INDEX IX_InvoiceLines_DocEntry_LineNum ON #InvoiceLines (DocEntry, LineNum);
+
+        ------------------------------------------------------------
+        -- 3. HEADERS
+        ------------------------------------------------------------
+        SELECT
+            H.SaleOrderNumber                                  AS SaleOrderNumber,
+            CASE
+                WHEN H.U_Brand LIKE '%ARISER%'   THEN 'ARISER'
+                WHEN H.U_Brand LIKE '%UATHAYAM%' THEN 'UATHAYAM'
+            END AS DivisionName,
+            H.DocEntry                                         AS DocEntry,
+            H.CardCode                                           AS Cardcode,
+            H.CardName                                           AS CardName,
+            CAST(H.DocNum AS INT)                                AS DocNum,
+            H.DocDate                                            AS DocDate,
+            H.DocDueDate                                         AS DocDueDate,
+            CAST(H.DocTotal AS DECIMAL(18,2))                    AS DocTotal,
+            CAST(ISNULL(H.DiscSum, 0) AS DECIMAL(18,2))          AS DocDiscount,
+            CAST(ISNULL(H.VatSum, 0) AS DECIMAL(18,2))           AS TaxAmount,
+            ISNULL(H.U_Brand, '')                                AS Brand,
+            ISNULL(H.U_IRN, '')                                  AS IRNNo,
+            ISNULL(H.U_BStatus, '')                              AS EwayBillNo,
+            ISNULL(H.Comments, '')                               AS OrderRemarks,
+            ISNULL(H.NumAtCard, '')                              AS CustomerReference,
+            ISNULL(H.U_Transport, '')                            AS TransporterName,
+            ISNULL(H.U_Dsnation, '')                             AS Destination,
+            ISNULL(H.U_Lrno, '')                                 AS Lrno,
+            H.U_LrDat                                            AS LrDate,
+            CAST(ISNULL(TRY_CAST(H.U_Lrwight AS DECIMAL(18,6)), 0) AS DECIMAL(18,2)) AS LrWgt,
+            ISNULL(H.U_Pass, '')                                 AS LRPassType,
+            CAST(ISNULL(H.TotalExpns, 0) AS DECIMAL(18,2))       AS FreightAmount,
+            CAST(ISNULL(Q.TotalQuantity, 0) AS DECIMAL(18,2))    AS TotalQuantity,
+            ISNULL(H.U_Arcode, '')                               AS AreaCode,
+            CAST(ISNULL(TRY_CAST(H.U_Noofbun AS DECIMAL(18,6)), 0) AS INT) AS NoofBundle,
+            CAST(ISNULL(H.RoundDif, 0) AS DECIMAL(18,2))         AS RoundDif,
+            ISNULL(H.PayToCode, '')                              AS BilltoID,
+            ISNULL(H.ShipToCode, '')                             AS ShiptoID,
+            ISNULL(NULLIF(C.U_GSTIN, ''), ISNULL(C.LicTradNum, '')) AS GSTIN,
+            ISNULL(H.DocType, 'I')                             AS DocType
+        FROM #InvoiceHeader H
+        INNER JOIN [BBLive].[dbo].[OCRD] C WITH (NOLOCK) ON C.CardCode = H.CardCode
+        LEFT JOIN [BBLive].[dbo].[OBPL] BR WITH (NOLOCK) ON BR.BPLId = H.BPLId
+        LEFT JOIN (
+            SELECT DocEntry, SUM(Quantity) AS TotalQuantity
+            FROM #InvoiceLines
+            GROUP BY DocEntry
+        ) Q ON Q.DocEntry = H.DocEntry
+        ORDER BY H.DocDate, H.DocEntry;
+
+        ------------------------------------------------------------
+        -- 4. LINES
+        ------------------------------------------------------------
+        SELECT
+            L.DocEntry,
+            CAST(L.LineNum + 1 AS INT)                                       AS LineNum,
+            L.ItemCode                                                       AS Itemcode,
+            L.CatalogName, L.HSNCODE, L.Style, L.Size, L.ColorCode,
+            CAST(L.PriceBefDi AS DECIMAL(18,2))                              AS PriceBeforeDisc,
+            CAST(L.Price AS DECIMAL(18,2))                                   AS Price,
+            CAST(L.Quantity AS INT)                                          AS Quantity,
+            CAST(ISNULL(L.PackQty, 0) AS INT)                                AS PackageQuantity,
+            CAST(ISNULL(TRY_CAST(L.U_MRP AS DECIMAL(18,6)), 0) AS DECIMAL(18,2)) AS MRP,
+            CAST(ISNULL(L.DiscPrcnt, 0) AS DECIMAL(18,2))                    AS DiscPrcnt,
+            CAST((L.PriceBefDi - L.Price) * L.Quantity AS DECIMAL(18,2))     AS DiscountAmount,
+            ISNULL(L.VatGroup, '')                                           AS TaxCode,
+            CAST(ISNULL(L.VatPrcnt, 0) AS DECIMAL(18,2))                     AS TaxPer,
+            CAST(ISNULL(L.VatSum, 0) AS DECIMAL(18,2))                       AS TaxAmount,
+            CAST(L.LineTotal AS DECIMAL(18,2))                               AS LineTotalWithoutTax,
+            CAST(L.LineTotal + ISNULL(L.VatSum, 0) AS DECIMAL(18,2))         AS LineTotalWithTax
+        FROM #InvoiceLines L
+        ORDER BY L.DocEntry, L.LineNum;
+
+        DROP TABLE IF EXISTS #InvoiceHeader;
+        DROP TABLE IF EXISTS #InvoiceLines;
+    `;
+
+    const result = await req.query(query);
+    const [headers = [], lines = []] = result.recordsets;
+
+    const linesByDoc = new Map();
+    for (const line of lines) {
+        if (!linesByDoc.has(line.DocEntry)) linesByDoc.set(line.DocEntry, []);
+        linesByDoc.get(line.DocEntry).push(line);
+    }
+    for (const h of headers) h.Lines = linesByDoc.get(h.DocEntry) || [];
+    return headers;
+}
+
 module.exports = {
     getProductData,
     getProductsPaged,
@@ -2539,6 +2849,9 @@ module.exports = {
     getOutstandingData,
     getOutstandingPaged,
     getOutstandingDataByCodes,
+    resolveInvoiceWindow,
+    getInvoicesPaged,
+    getInvoiceData,
     insertPunchLog,
     updatePunchLogStatus,
     getPendingPunchLogs,
