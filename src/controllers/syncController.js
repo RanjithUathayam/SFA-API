@@ -405,6 +405,7 @@ exports.syncSchemes = async (req, res) => {
                 `BP: ${s.Policy.SC_BpInclution[0]?.BPCode ?? 'n/a'}`
             )
         );
+
         const sfResult = await sfService.upsertSchemes(payload);
 
         divider('SCHEME SYNC COMPLETE');
@@ -527,85 +528,196 @@ exports.syncBusinessPartners = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/sync/businessPartnerTrigger
+// POST /api/sync/businessPartnerTrigger  (also run nightly by
+// cronJobs.runBusinessPartnerApiSync)
 //
-// One-CardCode-at-a-time Business Partner Scheduler:
-//   1. Pull the first ACRD row with U_SFATriggerStatus IS NULL OR = 'N'.
-//   2. Sync that single CardCode to Salesforce via syncBusinessPartners logic.
-//   3. Only on confirmed success, flip U_SFATriggerStatus to 'Y'.
-// If nothing succeeds, the trigger row is left untouched (NULL/'N') so the
-// next scheduler run retries the same Business Partner.
+// Business Partner Scheduler — same flow as syncBusinessPartners, limited to
+// OCRD rows flagged pending (U_SFATriggerStatus = 'N'):
+//   1. Fetch ALL pending CardCodes (active customers with an area code)
+//   2. Run BP Master query for those codes via dbService
+//   3. Map rows → { businessPartners: [...] } via mapper
+//   4. Send to SF one BP at a time (SF limit: max 1 BP per request)
+//   5. Set U_SFATriggerStatus = 'Y' only for BPs SF accepted — failed /
+//      not-found BPs stay 'N' and are retried next run.
+//   6. Record each BP's result (Pushed / Failed + error) in
+//      SFA_RecordPushStatus (MasterType='businesspartners').
+// NULL U_SFATriggerStatus = legacy BP never flagged by SAP — not pending; use
+// POST /api/sync/businesspartners for a full / selective push.
 // ─────────────────────────────────────────────────────────────────────────────
+let bpTriggerSyncRunning = false;
+
+// Status-table writes must never break the trigger flow — log and carry on.
+async function recordBPPushResults(results) {
+    if (!results.length) return;
+    try {
+        await recordPushSvc.ensureTable();
+        await recordPushSvc.setBulkResults('businesspartners', results);
+    } catch (err) {
+        log.error(`Could not record BP push status for ${results.length} BP(s): ${err.message}`);
+    }
+}
+
+// SF BP API error body: { status, message, results: [{ externalId, errors: [...] }] }
+// → keep just the per-record error lines; fall back to raw JSON.
+function errorText(e) {
+    if (typeof e === 'string') return e;
+    const lines = (e?.results || []).flatMap(r => r.errors?.length ? r.errors : [r.message]).filter(Boolean);
+    return lines.length ? lines.join(' | ') : JSON.stringify(e);
+}
+
 exports.syncNextTriggeredBusinessPartner = async (req, res) => {
+    // One run at a time across the cron job and the HTTP endpoint, so the same
+    // pending BP is never pushed to SF twice concurrently.
+    if (bpTriggerSyncRunning) {
+        const msg = 'Business Partner trigger sync is already running. Try again when it finishes.';
+        log.warn(msg);
+        return res.status(409).json({ message: msg, error: msg });
+    }
+    bpTriggerSyncRunning = true;
+
     const startTime = Date.now();
     divider('BP TRIGGER SYNC START');
 
+    let mappedCodes = [];
     try {
-        const trigger = await dbService.getNextPendingBPTrigger();
+        log.info('Fetching pending business partners (OCRD.U_SFATriggerStatus = \'N\')…');
+        const triggers = await dbService.getAllPendingBPTriggers();
+        const codes    = triggers.map(t => t.CardCode);
+        log.info(`Pending business partners found : ${codes.length}`);
+        triggers.forEach((t, i) => log.info(`  [${i + 1}/${codes.length}] ${t.CardCode} | ${t.CardName}`));
 
-        if (!trigger) {
-            log.info('No pending ACRD trigger rows (U_SFATriggerStatus IS NULL/\'N\') — nothing to sync.');
-            divider();
+        if (!codes.length) {
+            log.info('No pending OCRD trigger rows (U_SFATriggerStatus = \'N\') — nothing to sync.');
             return res.status(200).json({ message: 'No pending business partners to sync.' });
         }
 
-        const { CardCode, CardName } = trigger;
-        log.info(`Pending business partner found : ${CardCode} (${CardName})`);
+        const sqlData = await dbService.getBPMasterDataByCodes(codes);
+        log.info(`Fetched ${sqlData.length} raw DB row(s) across all sub-brand passes`);
 
-        const rows = await dbService.getBPMasterDataByCodes([CardCode]);
-        if (!rows.length) {
-            log.warn(`CardCode ${CardCode} not found in BP master — leaving U_SFATriggerStatus untouched.`);
-            divider();
-            return res.status(200).json({
-                message : 'Business partner not found in master data — trigger left pending for retry.',
-                cardCode: CardCode
-            });
+        if (!sqlData.length) {
+            log.warn(`No BP data found in DB for pending codes — left pending: ${codes.join(', ')}`);
+            await recordBPPushResults(codes.map(c => ({ recordKey: c, success: false, errorMessage: 'Not found in BP master' })));
+            return res.status(200).json({ message: 'No BP data found.', pendingCount: codes.length, notFound: codes });
         }
 
-        const payload  = mapper.mapToBPPayload(rows);
+        const payload  = mapper.mapToBPPayload(sqlData);
         const totalBPs = payload.businessPartners.length;
+        log.info(`Mapped to ${totalBPs} unique business partner(s)`);
+
         if (totalBPs === 0) {
-            log.warn(`Mapper produced 0 BPs for ${CardCode} — leaving U_SFATriggerStatus untouched.`);
-            divider();
-            return res.status(200).json({
-                message : 'Mapper produced no payload — trigger left pending for retry.',
-                cardCode: CardCode
-            });
+            log.warn('Mapper produced 0 BPs — nothing to sync.');
+            await recordBPPushResults(codes.map(c => ({ recordKey: c, success: false, errorMessage: 'Mapper produced no payload' })));
+            return res.status(200).json({ message: 'No valid BP data to sync.', pendingCount: codes.length });
         }
 
-        const sfResult  = await sfService.upsertBusinessPartners(payload);
-        const succeeded = sfResult.failedRecords === 0 && sfResult.successRecords > 0;
-
-        if (succeeded) {
-            await dbService.markBPTriggerSynced(CardCode);
-            log.ok(`CardCode ${CardCode} synced successfully — U_SFATriggerStatus set to 'Y'.`);
-        } else {
-            log.error(`CardCode ${CardCode} sync did not fully succeed — U_SFATriggerStatus left as-is for retry.`);
+        mappedCodes    = payload.businessPartners.map(bp => bp.BPCode);
+        const notFound = codes.filter(c => !mappedCodes.includes(c));
+        if (notFound.length) {
+            log.warn(`Not found in BP master (skipped, left pending): ${notFound.join(', ')}`);
+            await recordBPPushResults(notFound.map(c => ({ recordKey: c, success: false, errorMessage: 'Not found in BP master' })));
         }
+
+        payload.businessPartners.forEach((bp, i) =>
+            log.info(
+                `  Payload [${i + 1}/${totalBPs}] ${bp.BPCode} | ${bp.BPName} | ` +
+                `Category: ${bp.BPCategory} | ` +
+                `Addresses: ${bp.BillShipTo.length} | ` +
+                `Contacts: ${bp.Map_BpContactDetails.length} | ` +
+                `SubBrands: ${bp.MST_Map_BP_SubBrand.length}`
+            )
+        );
+
+        log.info(`Calling SF BusinessPartner API for ${totalBPs} BP(s)…`);
+        const sfResult = await sfService.upsertBusinessPartners(payload);
+        log.info(`SF response — success: ${sfResult.successRecords}, failed: ${sfResult.failedRecords}`);
+
+        const failedByCode = new Map((sfResult.failedDetails || []).map(f => [f.code, f]));
+        const syncedCodes  = mappedCodes.filter(c => !failedByCode.has(c));
+
+        syncedCodes.forEach(c => log.ok(`  ${c} — SF accepted`));
+        failedByCode.forEach((f, c) =>
+            log.error(`  ${c} — SF FAILED (HTTP ${f.status}) — left pending: ${errorText(f.error)}`)
+        );
+
+        // SF already accepted these — any BP whose 'Y' update fails (e.g. row
+        // locked by SAP) stays 'N' and is re-upserted next run.
+        let updated = 0;
+        let markError = null;
+        if (syncedCodes.length) {
+            try {
+                const mark = await dbService.markBPTriggersSynced(syncedCodes);
+                updated = mark.updated;
+                const markFailed = new Set(mark.failed.map(f => f.code));
+                const marked     = syncedCodes.filter(c => !markFailed.has(c));
+                if (marked.length) log.ok(`U_SFATriggerStatus set to 'Y' for ${updated} BP(s): ${marked.join(', ')}`);
+                mark.failed.forEach(f =>
+                    log.error(`  ${f.code} — could not set U_SFATriggerStatus = 'Y' (left pending): ${f.error}`)
+                );
+                if (mark.failed.length) {
+                    markError = `Could not set 'Y' for ${mark.failed.length} BP(s): ${mark.failed.map(f => f.code).join(', ')}`;
+                }
+            } catch (dbErr) {
+                markError = dbErr.message;
+                log.error(`Failed to set U_SFATriggerStatus = 'Y' for ${syncedCodes.length} BP(s) — left pending: ${dbErr.message}`);
+            }
+        }
+
+        await recordBPPushResults([
+            ...syncedCodes.map(c => ({ recordKey: c, success: true, errorMessage: null })),
+            ...[...failedByCode].map(([c, f]) => ({ recordKey: c, success: false, errorMessage: errorText(f.error) })),
+        ]);
 
         divider('BP TRIGGER SYNC COMPLETE');
-        log.ok(`Elapsed : ${elapsed(startTime)}`);
+        log.ok  (`Elapsed          : ${elapsed(startTime)}`);
+        log.info(`Pending found    : ${codes.length}`);
+        log.info(`BPs mapped       : ${totalBPs}`);
+        log.ok  (`SF success       : ${sfResult.successRecords}`);
+        log.ok  (`Marked 'Y'       : ${updated}`);
+        if (sfResult.failedRecords > 0) log.error(`SF failed        : ${sfResult.failedRecords}`);
+        if (notFound.length)            log.warn (`Not found        : ${notFound.length}`);
+        if (markError)                  log.error(`Trigger update   : FAILED — ${markError}`);
         divider();
 
-        return res.status(succeeded ? 200 : 500).json({
-            message       : succeeded
+        return res.status(200).json({
+            message       : sfResult.failedRecords === 0 && notFound.length === 0 && !markError
                 ? 'Business Partner Trigger Sync Completed Successfully'
-                : 'Business Partner Trigger Sync Failed — item left pending for retry',
+                : 'Business Partner Trigger Sync Completed — some business partners left pending for retry',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
-            cardCode      : CardCode,
-            cardName      : CardName,
+            pendingCount  : codes.length,
+            dbRowsFetched : sqlData.length,
+            bpsMapped     : totalBPs,
+            markedSynced  : updated,
+            ...(markError ? { markError } : {}),
+            notFound,
             ...sfResult
         });
 
     } catch (err) {
         divider('BP TRIGGER SYNC ERROR');
         log.error(`Sync failed after ${elapsed(startTime)}: ${err.message}`);
+        // sfService attaches per-BP errors when every upsert failed.
+        const sfFailed = new Map((err.failedDetails || []).map(f => [f.code, f]));
+        sfFailed.forEach((f, c) =>
+            log.error(`  ${c} — SF FAILED (HTTP ${f.status}) — left pending: ${errorText(f.error)}`)
+        );
+        if (mappedCodes.length) {
+            log.error(`Left pending (U_SFATriggerStatus stays 'N'): ${mappedCodes.join(', ')}`);
+            await recordBPPushResults(mappedCodes.map(c => ({
+                recordKey   : c,
+                success     : false,
+                errorMessage: sfFailed.has(c) ? errorText(sfFailed.get(c).error) : err.message,
+            })));
+        }
         divider();
         return res.status(500).json({
             message       : 'Business Partner Trigger Sync Failed',
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
-            error         : err.message
+            error         : err.message,
+            ...(sfFailed.size ? { failedDetails: err.failedDetails } : {}),
+            details       : err.response?.data ?? null
         });
+    } finally {
+        bpTriggerSyncRunning = false;
     }
 };
 

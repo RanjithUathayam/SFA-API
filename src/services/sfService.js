@@ -127,6 +127,17 @@ function verifySFResponse(response, label) {
 // ─────────────────────────────────────────────────────────────────────────────
 // RETRY WRAPPER
 // ─────────────────────────────────────────────────────────────────────────────
+// SF Apex APIs answer business/validation failures (restricted picklist,
+// custom validation, …) with a structured { status: 'error' } body. Re-sending
+// the same payload cannot succeed and repeats partial writes on SF, so only
+// network errors, timeouts and unstructured / lock errors are retried.
+function isNonRetryableSFError(err) {
+    const data = err.response?.data;
+    if (!data || typeof data !== 'object') return false;
+    if (String(data.status ?? data.Status).toLowerCase() !== 'error') return false;
+    return !JSON.stringify(data).includes('UNABLE_TO_LOCK_ROW');
+}
+
 async function withRetry(fn, label, maxRetries = MAX_RETRIES) {
     let lastErr;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -134,6 +145,10 @@ async function withRetry(fn, label, maxRetries = MAX_RETRIES) {
             return await fn();
         } catch (err) {
             lastErr = err;
+            if (isNonRetryableSFError(err)) {
+                log.error(`[${label}] SF rejected the data (HTTP ${err.response.status}) — not retrying.`);
+                break;
+            }
             if (attempt === maxRetries) {
                 log.error(`[${label}] All ${maxRetries} retries exhausted.`);
             } else {
@@ -571,7 +586,9 @@ async function upsertBusinessPartners(payload) {
     log.divider();
 
     if (summary.success.length === 0 && summary.failed.length > 0) {
-        throw new Error(`All ${summary.failed.length} BP upsert(s) failed.`);
+        const err = new Error(`All ${summary.failed.length} BP upsert(s) failed.`);
+        err.failedDetails = summary.failed;   // per-BP SF errors for the caller
+        throw err;
     }
 
     return {

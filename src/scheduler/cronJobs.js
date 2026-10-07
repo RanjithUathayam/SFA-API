@@ -465,6 +465,16 @@ async function runPriceListApiSync() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Business Partner API sync — driven by OCRD.U_SFATriggerStatus = 'N'.
+// Calls syncController.syncNextTriggeredBusinessPartner directly (same mock
+// req/res adapter pattern as runProductApiSync) so the scheduled run and the
+// manual POST /api/sync/businessPartnerTrigger endpoint share one
+// implementation — which reuses the syncBusinessPartners pipeline
+// (getBPMasterDataByCodes → mapToBPPayload → sfService.upsertBusinessPartners).
+// Only BPs SF accepted are set to 'Y'; the rest stay 'N' for the next run.
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function runBusinessPartnerApiSync() {
     if (bpApiSyncRunning) {
         log.warn('Business Partner API sync already in progress — skipping this tick.');
@@ -477,15 +487,22 @@ async function runBusinessPartnerApiSync() {
 
     try {
         const { mockReq, mockRes, promise } = buildMockContext();
-        syncController.syncNextTriggeredBusinessPartner(mockReq, mockRes);
+        await syncController.syncNextTriggeredBusinessPartner(mockReq, mockRes);
         const result = await promise;
+        const data   = result.data || {};
 
         if (result.statusCode >= 200 && result.statusCode < 300) {
             log.ok(`Business Partner API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+            log.info(`  Pending found   : ${data.pendingCount ?? 0}`);
+            log.ok  (`  SF success      : ${data.successRecords ?? 0}`);
+            log.ok  (`  Marked 'Y'      : ${data.markedSynced ?? 0}`);
+            if (data.failedRecords > 0)  log.error(`  SF failed       : ${data.failedRecords} — ${(data.failedDetails || []).map(f => f.code).join(', ')}`);
+            if (data.notFound?.length)   log.warn (`  Not found       : ${data.notFound.join(', ')}`);
+            if (data.markError)          log.error(`  Trigger update  : FAILED — ${data.markError}`);
         } else {
-            log.error(`Business Partner API Sync returned HTTP ${result.statusCode} — elapsed: ${elapsed(startTime)}`);
+            log.error(`Business Partner API Sync returned HTTP ${result.statusCode} — elapsed: ${elapsed(startTime)}: ${data.error ?? data.message}`);
         }
-        log.info(`  Response: ${JSON.stringify(result.data)}`);
+        log.info(`  Response: ${JSON.stringify(data)}`);
 
     } catch (err) {
         log.error(`Business Partner API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);

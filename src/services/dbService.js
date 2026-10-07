@@ -405,9 +405,16 @@ async function getImageData() {
     }
 }
 
-async function getSchemeData() {
+// Active schemes (today within U_FrmDt..U_ToDt), or the given DocEntries when
+// docEntries is passed (selective push from the master screen).
+async function getSchemeData(docEntries = null) {
     try {
-        const pool = await getPool()    
+        const pool = await getPool();
+        const req  = pool.request();
+        const filter = docEntries && docEntries.length
+            ? `T0.DocEntry IN (${docEntries.map((c, i) => { req.input(`c${i}`, sql.Int, Number(c)); return `@c${i}`; }).join(',')})`
+            : `CAST(GETDATE() AS DATE) BETWEEN T0.U_FrmDt AND T0.U_ToDt`;
+
         const query = `
             WITH 
                 HeaderLine AS (
@@ -430,9 +437,6 @@ async function getSchemeData() {
                     FROM 
                     [BBLive].[dbo].[@SCHEM] T0 
                     INNER JOIN [BBLive].[dbo].[@SCHEML] T1 ON T0.DocEntry = T1.DocEntry 
-                    WHERE 
-                    GETDATE() BETWEEN T0.U_FrmDt 
-                    AND T0.U_ToDt
                 ) 
                 SELECT 
                 CAST(
@@ -625,7 +629,7 @@ async function getSchemeData() {
                 WHERE H.rn = 1
         `;
 
-        const { recordset } = await pool.request().query(query);
+        const { recordset } = await req.query(query);
         return recordset;
 
     } catch (err) {
@@ -758,8 +762,8 @@ async function getBPMasterData(cardCodes = null) {
                         ISNULL(T0.U_GSTIN,'') AS GSTNo,
                         CASE WHEN T0.validFor = 'Y' THEN 1 ELSE 0 END AS IsActive,
                         '' AS GstStatus
-                    FROM [BBLive].[dbo].CRD1 T1
-                    LEFT JOIN [BBLive].[dbo].OCPR C ON C.CardCode = T1.CardCode
+                    FROM [BBLive].[dbo].CRD1 T1 WITH (NOLOCK)
+                    LEFT JOIN [BBLive].[dbo].OCPR C WITH (NOLOCK) ON C.CardCode = T1.CardCode
                     WHERE T1.CardCode = T0.CardCode
                     FOR JSON PATH
                 ) AS BillShipTo,
@@ -849,7 +853,7 @@ async function getBPMasterData(cardCodes = null) {
                         CAST(0 AS INT) AS OutstandingWhatsapp,
                         CAST(0 AS INT) AS PaycollectionWhatsapp,
                         CAST(0 AS INT) AS DistributorWhatsapp
-                    FROM [BBLive].[dbo].OCPR
+                    FROM [BBLive].[dbo].OCPR WITH (NOLOCK)
                     WHERE CardCode = T0.CardCode
                     FOR JSON PATH
                 ) AS Map_BpContactDetails,
@@ -921,7 +925,7 @@ async function getBPMasterData(cardCodes = null) {
                     FOR JSON PATH
                 ) AS Discount_BP_Division
 
-            FROM [BBLive].[dbo].OCRD T0
+            FROM [BBLive].[dbo].OCRD T0 WITH (NOLOCK)
             CROSS JOIN SubBrandMap SB
 
             WHERE T0.CardType = 'C'
@@ -1868,39 +1872,73 @@ async function getBPListPaged({ page = 1, limit = 50, search, pushStatus } = {})
     };
 }
 
+// SQL Server allows max 2100 parameters per request — query large code lists in chunks.
+const BP_MASTER_CODE_CHUNK = 1000;
+
 async function getBPMasterDataByCodes(cardCodes) {
     if (!cardCodes || cardCodes.length === 0) return [];
-    return getBPMasterData(cardCodes);
+
+    const rows = [];
+    for (let i = 0; i < cardCodes.length; i += BP_MASTER_CODE_CHUNK) {
+        rows.push(...await getBPMasterData(cardCodes.slice(i, i + BP_MASTER_CODE_CHUNK)));
+    }
+    return rows;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUSINESS PARTNER SCHEDULER TRIGGER — ACRD.U_SFATriggerStatus drives
-// one-CardCode-at-a-time processing: NULL/'N' = pending, 'Y' = already synced.
+// BUSINESS PARTNER SCHEDULER TRIGGER — OCRD.U_SFATriggerStatus drives
+// processing: 'N' = pending, 'Y' = already synced.
+// Eligibility mirrors getBPMasterData() (active customers with an area code)
+// so a pending row is never one the master query would reject.
 // ─────────────────────────────────────────────────────────────────────────────
-async function getNextPendingBPTrigger() {
+// Returns every pending BP. Failed BPs stay 'N' and are retried next run.
+// NOLOCK: SAP B1 holds OCRD row locks for minutes while documents are posted
+// (balance updates), which otherwise blocks this read past the 15s timeout.
+async function getAllPendingBPTriggers() {
     const pool = await getPool();
 
     const result = await pool.request().query(`
-        SELECT TOP 1 CardCode, CardName
-        FROM ACRD
-        WHERE U_SFATriggerStatus IS NULL
-           OR U_SFATriggerStatus = 'N'
+        SELECT CardCode, CardName
+        FROM [BBLive].[dbo].OCRD WITH (NOLOCK)
+        WHERE U_SFATriggerStatus = 'N'
+          AND CardType = 'C'
+          AND validFor = 'Y'
+          AND U_AreaCode != ''
         ORDER BY CardCode
     `);
 
-    return result.recordset[0] || null;
+    return result.recordset;
 }
 
-async function markBPTriggerSynced(cardCode) {
+// Lock wait per BP, kept below mssql's 15s request timeout so a BP that SAP
+// has locked fails fast (error 1222) instead of timing out the request.
+const BP_TRIGGER_LOCK_TIMEOUT_MS = parseInt(process.env.BP_TRIGGER_LOCK_TIMEOUT_MS, 10) || 10000;
+
+// Updates one BP at a time so a single SAP-locked row cannot block the rest.
+// Returns { updated, failed: [{ code, error }] } — failed BPs stay 'N' and are
+// retried (re-upserted to SF) next run.
+async function markBPTriggersSynced(cardCodes) {
+    const outcome = { updated: 0, failed: [] };
+    if (!cardCodes || cardCodes.length === 0) return outcome;
     const pool = await getPool();
 
-    await pool.request()
-        .input('CardCode', sql.NVarChar(50), cardCode)
-        .query(`
-            UPDATE ACRD
-            SET U_SFATriggerStatus = 'Y'
-            WHERE CardCode = @CardCode
-        `);
+    for (const code of cardCodes) {
+        try {
+            const result = await pool.request()
+                .input('CardCode', sql.NVarChar(50), code)
+                .query(`
+                    SET LOCK_TIMEOUT ${BP_TRIGGER_LOCK_TIMEOUT_MS};
+                    UPDATE [BBLive].[dbo].OCRD
+                    SET U_SFATriggerStatus = 'Y'
+                    WHERE CardCode = @CardCode
+                `);
+            outcome.updated += result.rowsAffected.reduce((n, r) => n + r, 0);
+        } catch (err) {
+            outcome.failed.push({ code, error: err.message });
+        }
+    }
+
+    return outcome;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1916,7 +1954,7 @@ async function getSchemesPaged({ page = 1, limit = 50, search, pushStatus } = {}
         WITH SchemeSummary AS (
             SELECT
                 T0.DocEntry,
-                CAST(CONCAT(CAST(T0.[Object] AS NVARCHAR(50)), T0.DocNum) AS NVARCHAR(60)) AS PolicyNumber,
+                CAST(CONCAT(CAST(T0.[Object] AS NVARCHAR(50)), T0.DocEntry) AS NVARCHAR(60)) AS PolicyNumber,
                 CAST(T0.Remark AS NVARCHAR(500))                      AS PolicyName,
                 MAX(CASE
                     WHEN T1.U_bran LIKE '%UATHAYAM%' THEN 'UATHAYAM'
@@ -1928,7 +1966,7 @@ async function getSchemesPaged({ page = 1, limit = 50, search, pushStatus } = {}
                 COUNT(DISTINCT T1.LineId)                             AS LineCount
             FROM [BBLive].[dbo]."@SCHEM" T0
             INNER JOIN [BBLive].[dbo]."@SCHEML" T1 ON T0.DocEntry = T1.DocEntry
-            WHERE T0.U_FrmDt >= '20250701' AND T0.U_ToDt <= '20260531'
+            WHERE CAST(GETDATE() AS DATE) BETWEEN T0.U_FrmDt AND T0.U_ToDt
             GROUP BY T0.DocEntry, T0.DocNum, CAST(T0.[Object] AS NVARCHAR(50)), CAST(T0.Remark AS NVARCHAR(500)), T0.U_FrmDt, T0.U_ToDt
         )
         SELECT
@@ -1953,7 +1991,7 @@ async function getSchemesPaged({ page = 1, limit = 50, search, pushStatus } = {}
         FROM (
             SELECT DISTINCT T0.DocEntry
             FROM [BBLive].[dbo]."@SCHEM" T0
-            WHERE T0.U_FrmDt >= '20250701' AND T0.U_ToDt <= '20260531'
+            WHERE CAST(GETDATE() AS DATE) BETWEEN T0.U_FrmDt AND T0.U_ToDt
         ) base
         LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
             ON rp.MasterType='schemes' AND rp.RecordKey=CAST(base.DocEntry AS NVARCHAR(100))
@@ -1985,75 +2023,7 @@ async function getSchemesPaged({ page = 1, limit = 50, search, pushStatus } = {}
 
 async function getSchemeDataByCodes(docEntries) {
     if (!docEntries || docEntries.length === 0) return [];
-    const pool = await getPool();
-    const req  = pool.request();
-    const placeholders = docEntries.map((c, i) => { req.input(`c${i}`, sql.Int, Number(c)); return `@c${i}`; }).join(',');
-
-    const query = `
-        SELECT
-            CAST(CONCAT(T0.[Object], T0.DocNum) AS NVARCHAR(50)) AS PolicyNumber,
-            1 AS Revision,
-            T0.DocEntry AS PolicyID,
-            T0.Remark AS PolicyName,
-            CASE WHEN T1.U_Discunt='Quantity' THEN 'SC' WHEN T1.U_Discunt='Percentage' THEN 'DIS' END AS SavingType,
-            T1.U_Discunt AS DiscountBasis,
-            'P' AS Applicability,
-            1 AS IsCustomerDefined, 1 AS IsActive,
-            CASE
-                WHEN T1.U_bran='UATHAYAM DHOTIE'     THEN 'UATHAYAM'
-                WHEN T1.U_bran='UATHAYAM SHIRTING'   THEN 'UATHAYAM'
-                WHEN T1.U_bran='UATHAYAM RDY'        THEN 'UATHAYAM'
-                WHEN T1.U_bran='UATHAYAM HOS'        THEN 'UATHAYAM'
-                WHEN T1.U_bran='UATHAYAM KIDS SET'   THEN 'UATHAYAM'
-                WHEN T1.U_bran='UATHAYAM MENS SET'   THEN 'UATHAYAM'
-                WHEN T1.U_bran='ARISER SHIRT'        THEN 'ARISER'
-                WHEN T1.U_bran='ARISER MENS TROUSERS' THEN 'ARISER'
-                WHEN T1.U_bran='ARISER KNITS'          THEN 'ARISER'
-            END AS DivisionCode,
-            '2026-05-20T00:00:00' AS FromDate, '2026-07-01T00:00:00' AS ToDate,
-            0 AS AllowDiscountForAllProducts, NULL AS DiscountPer,
-            (SELECT 'DEALER' AS BPCategory FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_BpCategoryMapping,
-            (SELECT DISTINCT L.U_Stat AS StateCode FROM [BBLive].[dbo]."@SCHEML" L
-             WHERE L.DocEntry=T0.DocEntry AND L.U_Stat IS NOT NULL
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS StateMapping,
-            (SELECT 'DEALER' AS Role FOR JSON PATH, INCLUDE_NULL_VALUES) AS RoleMapping,
-            (SELECT NULL AS BPCode FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_BpExclution,
-            (SELECT DISTINCT C.CardCode AS BPCode FROM [BBLive].[dbo].OCRD C
-             INNER JOIN [BBLive].[dbo].CRD1 D ON C.CardCode=D.CardCode AND D.AdresType='B'
-             WHERE D.State IN (SELECT DISTINCT L.U_Stat FROM [BBLive].[dbo]."@SCHEML" L WHERE L.DocEntry=T0.DocEntry)
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_BpInclution,
-            (SELECT I.ItemCode AS ProductCode, I.U_Size AS SizeCode, I.U_SubGrp6 AS ColorCode,
-                CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MinOrderQty,
-                CAST(L.U_OffersQty AS DECIMAL(10,2)) AS FreeQty,
-                'S' AS Applicability, L.U_OffersQty AS AllowMultiplyFreeQty,
-                CAST(L.U_BillsQty AS DECIMAL(10,2)) AS MaxAllowedFreeQty,
-                1 AS IsActive, 1 AS MappingStatus,
-                (SELECT ALT.ItemCode AS ProductCode, ALT.U_Size AS SizeCode, ALT.U_SubGrp6 AS ColorCode, 0 AS IsActive
-                 FROM [BBLive].[dbo].OITM ALT WHERE ALT.ItemCode=I.ItemCode AND ALT.validFor='Y'
-                 FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProdAlternate
-             FROM [BBLive].[dbo]."@SCHEML" L
-             INNER JOIN [BBLive].[dbo].OITM I ON I.U_SubGrp7=L.U_Qual
-             WHERE L.DocEntry=T0.DocEntry FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProductMapping,
-            (SELECT NULL AS GroupCode, NULL AS StyleCode, NULL AS MinOrderQty, NULL AS FreeQty,
-                NULL AS Applicability, 0 AS AllowMultiplyFreeQty, NULL AS MaxAllowedFreeQty,
-                NULL AS GroupName, 0 AS IsActive, 0 AS MappingStatus
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProdGroupMapping,
-            (SELECT NULL AS ProductCode, NULL AS SizeCode, NULL AS ColorCode, 0 AS IsActive
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProdAlternate,
-            (SELECT NULL AS GroupName, NULL AS StyleCode, 0 AS IsActive FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProdGroupAlternate,
-            (SELECT NULL AS Brand, NULL AS DiscountType, NULL AS DiscountVal, 0 AS IsActive FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_Brand_Discount,
-            (SELECT NULL AS DivisionCode, NULL AS GroupCode, NULL AS GroupName, NULL AS StyleCode,
-                NULL AS StyleName, NULL AS DiscountType, NULL AS DiscountVal, 0 AS IsActive
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProdGroupDirectDiscount,
-            (SELECT NULL AS ProductCode, NULL AS SizeCode, NULL AS ColorCode,
-                NULL AS DiscountType, NULL AS DiscountVal, 0 AS IsActive
-             FOR JSON PATH, INCLUDE_NULL_VALUES) AS SC_ProductDirectDiscount
-        FROM [BBLive].[dbo]."@SCHEM" T0
-        INNER JOIN [BBLive].[dbo]."@SCHEML" T1 ON T0.DocEntry = T1.DocEntry
-        WHERE T0.DocEntry IN (${placeholders})
-    `;
-    const result = await req.query(query);
-    return result.recordset;
+    return getSchemeData(docEntries);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2841,8 +2811,8 @@ module.exports = {
     getBPMasterData,
     getBPListPaged,
     getBPMasterDataByCodes,
-    getNextPendingBPTrigger,
-    markBPTriggerSynced,
+    getAllPendingBPTriggers,
+    markBPTriggersSynced,
     getStockData,
     getStockPaged,
     getStockDataByCodes,
