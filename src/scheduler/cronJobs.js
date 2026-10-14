@@ -213,113 +213,134 @@ async function runProductApiSync() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PRICE_LIST_CHANGES_QUERY = `
-;WITH
--- ================= PRICE LIST MASTER =================
-curM AS (
-    SELECT  T1.DocEntry, T1.U_ItemCode, T1.U_ItemName, T1.UpdateDate,
-            I.U_SubGrp1, I.U_SubGrp5,
-            T0.LineId, T0.U_RowId, T0.U_State, T0.U_SelPrice, T0.U_MRP
-    FROM [BBLive].[dbo].[@INS_PLM2] T0
-    INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T1.DocEntry = T0.DocEntry
-    INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T2.DocEntry = T0.DocEntry
-                                            AND T2.LineId = T0.U_RowId
-    INNER JOIN [BBLive].[dbo].OITM I ON I.ItemCode = T1.U_ItemCode
-    WHERE T2.U_Lock = 'N'
-      AND T0.U_MRP > 0
-      AND I.validFor = 'Y'
-      AND I.U_SubGrp1 NOT IN (
-          'ARISER SHIRT',
-          'UATHAYAM RDY',
-          'ARISER MENS TROUSERS'
-      )
-),
-prevM AS (
-    SELECT D.DocEntry, P.LogInst
-    FROM (SELECT DISTINCT DocEntry FROM curM) D
-    CROSS APPLY (
-        SELECT A.LogInst
-        FROM [BBLive].[dbo].[@AINS_OPLM] A
-        WHERE A.DocEntry = D.DocEntry
-        ORDER BY A.LogInst DESC
-        OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
-    ) P
-),
--- ================= PRICE LIST SETUP =================
-curS AS (
-    SELECT T0.DocEntry, T0.UpdateDate,
-           T1.U_SubGroup1, T1.U_SubGroup4, T1.U_SubGroup7,
-           T3.U_UniqId, T3.U_Size,
-           CAST(T2.U_Code AS VARCHAR(50)) AS U_State,
-           T3.U_SelPrice, T3.U_MRP
-    FROM [BBLive].[dbo].[@INS_OPLSN] T0
-    INNER JOIN [BBLive].[dbo].[@INS_PLSN1] T1
+SET NOCOUNT ON;
+
+/* =====================================================================
+   1. PRICE LIST MASTER - current rows (materialized once)
+   ===================================================================== */
+IF OBJECT_ID('tempdb..#curM') IS NOT NULL DROP TABLE #curM;
+
+SELECT  T1.DocEntry, T1.U_ItemCode, T1.U_ItemName, T1.UpdateDate,
+        I.U_SubGrp1, I.U_SubGrp5,
+        T0.LineId, T0.U_RowId, T0.U_State, T0.U_SelPrice, T0.U_MRP
+INTO    #curM
+FROM [BBLive].[dbo].[@INS_PLM2] T0
+INNER JOIN [BBLive].[dbo].[@INS_OPLM] T1 ON T1.DocEntry = T0.DocEntry
+INNER JOIN [BBLive].[dbo].[@INS_PLM1] T2 ON T2.DocEntry = T0.DocEntry
+                                        AND T2.LineId   = T0.U_RowId
+INNER JOIN [BBLive].[dbo].OITM I        ON I.ItemCode   = T1.U_ItemCode
+WHERE T2.U_Lock = 'N'
+  AND T0.U_MRP > 0
+  AND I.validFor = 'Y'
+  AND I.U_SubGrp1 NOT IN ('ARISER SHIRT', 'UATHAYAM RDY', 'ARISER MENS TROUSERS');
+
+CREATE CLUSTERED INDEX CIX_curM ON #curM (DocEntry, U_RowId, U_State);
+
+-- previous (second-latest) log instance per document
+IF OBJECT_ID('tempdb..#prevM') IS NOT NULL DROP TABLE #prevM;
+
+SELECT D.DocEntry, P.LogInst
+INTO   #prevM
+FROM (SELECT DISTINCT DocEntry FROM #curM) D
+CROSS APPLY (
+    SELECT A.LogInst
+    FROM [BBLive].[dbo].[@AINS_OPLM] A
+    WHERE A.DocEntry = D.DocEntry
+    ORDER BY A.LogInst DESC
+    OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
+) P;
+
+CREATE CLUSTERED INDEX CIX_prevM ON #prevM (DocEntry);
+
+
+/* =====================================================================
+   2. PRICE LIST SETUP - current lines, NOT yet multiplied by state
+   ===================================================================== */
+IF OBJECT_ID('tempdb..#curS') IS NOT NULL DROP TABLE #curS;
+
+SELECT T0.DocEntry, T0.UpdateDate,
+       T1.U_SubGroup1, T1.U_SubGroup4, T1.U_SubGroup7,
+       T3.U_UniqId, T3.U_Size, T3.U_SelPrice, T3.U_MRP
+INTO   #curS
+FROM [BBLive].[dbo].[@INS_OPLSN] T0
+INNER JOIN [BBLive].[dbo].[@INS_PLSN1] T1
         ON T1.DocEntry = T0.DocEntry
-    INNER JOIN [BBLive].[dbo].[@INS_PLSN3] T3
+INNER JOIN [BBLive].[dbo].[@INS_PLSN3] T3
         ON T3.DocEntry = T0.DocEntry
        AND T3.U_UniqId = T1.LineId
-    INNER JOIN [BBLive].[dbo].[@INS_PLSN2] T2
-        ON T2.DocEntry = T0.DocEntry
-       AND T2.U_Selected = 'Y'
-    WHERE T3.U_Lock <> 'Y'
-      AND T3.U_MRP > 0
-      AND T0.U_DocDate > '20260101'
-      AND T1.U_SubGroup1 IN (
-          'ARISER SHIRT',
-          'UATHAYAM RDY',
-          'ARISER MENS TROUSERS'
-      )
-),
-prevS AS (
-    SELECT D.DocEntry, P.LogInst
-    FROM (SELECT DISTINCT DocEntry FROM curS) D
-    CROSS APPLY (
-        SELECT A.LogInst
-        FROM [BBLive].[dbo].[@AINS_OPLSN] A
-        WHERE A.DocEntry = D.DocEntry
-        ORDER BY A.LogInst DESC
-        OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
-    ) P
-),
-chgS AS (
-    SELECT C.DocEntry, C.UpdateDate,
-           C.U_SubGroup1, C.U_SubGroup4, C.U_SubGroup7,
-           C.U_UniqId, C.U_Size, C.U_State, C.U_SelPrice, C.U_MRP,
-           O.U_SelPrice AS OldPrice,
-           O.U_MRP AS OldMRP
-    FROM curS C
-    INNER JOIN prevS V ON V.DocEntry = C.DocEntry
-    INNER JOIN [BBLive].[dbo].[@AINS_PLSN3] O
-        ON O.DocEntry = V.DocEntry
-       AND O.LogInst = V.LogInst
-       AND O.U_UniqId = C.U_UniqId
-       AND O.U_Size = C.U_Size
-    WHERE ISNULL(C.U_SelPrice, 0) <> ISNULL(O.U_SelPrice, 0)
-       OR ISNULL(C.U_MRP, 0) <> ISNULL(O.U_MRP, 0)
-)
--- ================= COMBINE (only changed rows) =================
-SELECT 'Price List Master' AS Source,
-       C.U_ItemCode AS ItemCode,
-       C.U_ItemName AS ItemName,
-       C.U_SubGrp1 AS Brand,
-       CAST(C.U_State AS VARCHAR(50)) AS State,
-       CAST(C.U_SubGrp5 AS VARCHAR(50)) AS Size,
-       C.U_SelPrice AS Price,
-       C.U_MRP AS MRP,
+WHERE T3.U_Lock <> 'Y'
+  AND T3.U_MRP > 0
+  AND T0.U_DocDate > '20260101'
+  AND T1.U_SubGroup1 IN ('ARISER SHIRT', 'UATHAYAM RDY', 'ARISER MENS TROUSERS')
+  -- same effect as the original inner join: doc must have >= 1 selected state
+  AND EXISTS (SELECT 1
+              FROM [BBLive].[dbo].[@INS_PLSN2] T2
+              WHERE T2.DocEntry = T0.DocEntry
+                AND T2.U_Selected = 'Y');
+
+CREATE CLUSTERED INDEX CIX_curS ON #curS (DocEntry, U_UniqId, U_Size);
+
+IF OBJECT_ID('tempdb..#prevS') IS NOT NULL DROP TABLE #prevS;
+
+SELECT D.DocEntry, P.LogInst
+INTO   #prevS
+FROM (SELECT DISTINCT DocEntry FROM #curS) D
+CROSS APPLY (
+    SELECT A.LogInst
+    FROM [BBLive].[dbo].[@AINS_OPLSN] A
+    WHERE A.DocEntry = D.DocEntry
+    ORDER BY A.LogInst DESC
+    OFFSET 1 ROWS FETCH NEXT 1 ROWS ONLY
+) P;
+
+CREATE CLUSTERED INDEX CIX_prevS ON #prevS (DocEntry);
+
+-- changed setup lines (compared once per line, not once per state)
+IF OBJECT_ID('tempdb..#chgS') IS NOT NULL DROP TABLE #chgS;
+
+SELECT C.DocEntry, C.UpdateDate,
+       C.U_SubGroup1, C.U_SubGroup4, C.U_SubGroup7,
+       C.U_UniqId, C.U_Size, C.U_SelPrice, C.U_MRP,
        O.U_SelPrice AS OldPrice,
-       O.U_MRP AS OldMRP,
-       'Price Changed' AS Remark,
-       C.DocEntry AS DocEntry,
-       C.UpdateDate,
-       C.LineId AS PriceID
-FROM curM C
-INNER JOIN prevM V ON V.DocEntry = C.DocEntry
-INNER JOIN [BBLive].[dbo].[@AINS_PLM2] O
-    ON O.DocEntry = V.DocEntry
-   AND O.LogInst = V.LogInst
-   AND O.U_RowId = C.U_RowId
-   AND O.U_State = C.U_State
+       O.U_MRP      AS OldMRP
+INTO   #chgS
+FROM #curS C
+INNER JOIN #prevS V ON V.DocEntry = C.DocEntry
+INNER JOIN [BBLive].[dbo].[@AINS_PLSN3] O
+        ON O.DocEntry = V.DocEntry
+       AND O.LogInst  = V.LogInst
+       AND O.U_UniqId = C.U_UniqId
+       AND O.U_Size   = C.U_Size
 WHERE ISNULL(C.U_SelPrice, 0) <> ISNULL(O.U_SelPrice, 0)
-   OR ISNULL(C.U_MRP, 0) <> ISNULL(O.U_MRP, 0)
+   OR ISNULL(C.U_MRP, 0)      <> ISNULL(O.U_MRP, 0);
+
+
+/* =====================================================================
+   3. COMBINE (only changed rows)
+   ===================================================================== */
+SELECT 'Price List Master'                 AS Source,
+       C.U_ItemCode                        AS ItemCode,
+       C.U_ItemName                        AS ItemName,
+       C.U_SubGrp1                         AS Brand,
+       CAST(C.U_State   AS VARCHAR(50))    AS State,
+       CAST(C.U_SubGrp5 AS VARCHAR(50))    AS Size,
+       C.U_SelPrice                        AS Price,
+       C.U_MRP                             AS MRP,
+       O.U_SelPrice                        AS OldPrice,
+       O.U_MRP                             AS OldMRP,
+       'Price Changed'                     AS Remark,
+       C.DocEntry                          AS DocEntry,
+       C.UpdateDate,
+       C.LineId                            AS PriceID
+FROM #curM C
+INNER JOIN #prevM V ON V.DocEntry = C.DocEntry
+INNER JOIN [BBLive].[dbo].[@AINS_PLM2] O
+        ON O.DocEntry = V.DocEntry
+       AND O.LogInst  = V.LogInst
+       AND O.U_RowId  = C.U_RowId
+       AND O.U_State  = C.U_State
+WHERE ISNULL(C.U_SelPrice, 0) <> ISNULL(O.U_SelPrice, 0)
+   OR ISNULL(C.U_MRP, 0)      <> ISNULL(O.U_MRP, 0)
 
 UNION ALL
 
@@ -327,8 +348,8 @@ SELECT 'Price List Setup',
        I.ItemCode,
        I.ItemName,
        I.U_SubGrp1,
-       S.U_State,
-       CAST(S.U_Size AS VARCHAR(50)),
+       CAST(T2.U_Code AS VARCHAR(50)),
+       CAST(S.U_Size  AS VARCHAR(50)),
        S.U_SelPrice,
        S.U_MRP,
        S.OldPrice,
@@ -337,16 +358,21 @@ SELECT 'Price List Setup',
        S.DocEntry,
        S.UpdateDate,
        S.U_UniqId
-FROM chgS S
+FROM #chgS S
+-- expand by selected state only AFTER filtering to changed lines
+INNER JOIN [BBLive].[dbo].[@INS_PLSN2] T2
+        ON T2.DocEntry   = S.DocEntry
+       AND T2.U_Selected = 'Y'
 INNER JOIN [BBLive].[dbo].OITM I
-    ON I.U_SubGrp1 = S.U_SubGroup1
-   AND I.U_SubGrp4 = S.U_SubGroup4
-   AND I.U_SubGrp7 = S.U_SubGroup7
-   AND I.U_SubGrp5 = S.U_Size
+        ON I.U_SubGrp1 = S.U_SubGroup1
+       AND I.U_SubGrp4 = S.U_SubGroup4
+       AND I.U_SubGrp7 = S.U_SubGroup7
+       AND I.U_SubGrp5 = S.U_Size
 WHERE I.validFor = 'Y'
 
-ORDER BY Source, ItemCode, State
-OPTION (RECOMPILE);`;
+ORDER BY Source, ItemCode, State;
+
+DROP TABLE #curM, #prevM, #curS, #prevS, #chgS;`;
 
 let priceListSyncPool = null;
 
