@@ -145,7 +145,8 @@ exports.syncProducts = async (req, res) => {
 //
 // Product Scheduler — processes every pending OITM row one item at a time:
 //   1. Pull the next OITM row with U_SFAItemActiveStatus = 'Yes' and
-//      U_SFATriggerStatus <> 'Y' (ItemCode greater than the last one
+//      U_SFATriggerStatus <> 'Y', or U_SFAItemActiveStatus = 'No' and
+//      U_SFATriggerStatus = 'N' (ItemCode greater than the last one
 //      attempted in this run).
 //   2. Sync that single ItemCode to Salesforce.
 //   3. Only on confirmed success, flip U_SFATriggerStatus to 'Y'.

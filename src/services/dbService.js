@@ -1498,8 +1498,12 @@ async function getProductDataByCodes(productCodes) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PRODUCT SCHEDULER TRIGGER — OITM.U_SFATriggerStatus drives one-item-at-a-time
-// processing for active items (U_SFAItemActiveStatus = 'Yes'):
-// anything other than 'Y' (NULL/'N') = pending, 'Y' = already synced.
+// processing for:
+//   - U_SFAItemActiveStatus = 'Yes': anything other than 'Y' (NULL/'N') = pending
+//   - U_SFAItemActiveStatus = 'No' : only explicit 'N' = pending (set by
+//     usp_SFA_SetOkItemsActiveStatus, sql/SFA_OkItems_ActiveStatus.sql), so
+//     legacy 'No' items with NULL trigger are not mass-synced.
+// 'Y' = already synced.
 // ─────────────────────────────────────────────────────────────────────────────
 // afterCode: last ItemCode attempted in the current run. Only rows with a
 // greater ItemCode are returned, so a failed / not-found item is skipped and
@@ -1518,8 +1522,10 @@ async function getNextPendingProductTrigger(afterCode = null) {
     const result = await request.query(`
         SELECT TOP 1 ItemCode, ItemName
         FROM [BBLive].[dbo].OITM
-        WHERE U_SFAItemActiveStatus = 'Yes'
-          AND ISNULL(U_SFATriggerStatus, '') <> 'Y'
+        WHERE (
+                (U_SFAItemActiveStatus = 'Yes' AND ISNULL(U_SFATriggerStatus, '') <> 'Y')
+             OR (U_SFAItemActiveStatus = 'No'  AND U_SFATriggerStatus = 'N')
+          )
           AND ISNULL(U_SubGrp1, '') NOT IN (
             'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
             'IMPERIAL COMPUTERS','PACKING MATERIAL','REPAIRS & MAINTENANCE',

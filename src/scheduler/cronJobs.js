@@ -164,7 +164,7 @@ async function runStockInventoryApiSync() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Product API sync — one item at a time, driven by OITM.U_SFATriggerStatus
-// (active items only: U_SFAItemActiveStatus = 'Yes').
+// (U_SFAItemActiveStatus = 'Yes' pending, or 'No' with U_SFATriggerStatus = 'N').
 // Calls syncController.syncNextTriggeredProduct directly (same mock req/res
 // adapter pattern as runStockInventoryApiSync) so the scheduled run and the
 // manual POST /api/sync/productTrigger endpoint share one implementation.
