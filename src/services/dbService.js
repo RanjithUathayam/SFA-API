@@ -1247,6 +1247,28 @@ async function getOutstandingData() {
     }
 }
 
+// Item has a price in the size-based price list (@INS_OPLSN) or the item price
+// list (@INS_OPLM) — same rule as getProductData / getProductDataByCodes, so the
+// grid lists every product the sync pushes (e.g. size-priced MAJESTIC items).
+const PRICED_ITEM_FILTER = `(
+            EXISTS (
+                SELECT 1
+                FROM [BBLive].[dbo]."@INS_OPLSN" t0b WITH(NOLOCK)
+                INNER JOIN [BBLive].[dbo]."@INS_PLSN1" T1b WITH(NOLOCK) ON t0b.DocEntry = T1b.DocEntry
+                INNER JOIN [BBLive].[dbo]."@INS_PLSN3" T3b WITH(NOLOCK) ON t0b.DocEntry = T3b.DocEntry AND T1b.LineId = T3b.U_UniqID
+                INNER JOIN [BBLive].[dbo]."@INS_PLSN2" T2b WITH(NOLOCK) ON t0b.DocEntry = T2b.DocEntry AND T2b.U_Selected = 'Y'
+                WHERE GETDATE() BETWEEN t0b.U_ValidFrom AND t0b.U_ValidTo
+                  AND T1b.U_SubGroup7 = t0.U_SubGrp7
+                  AND CONCAT(T1b.U_SubGroup7, T1b.U_SubGroup4, '', T1b.U_SubGroup1, '', T3b.U_Size)
+                    = CONCAT(t0.U_SubGrp7, t0.U_SubGrp4, '', t0.U_SubGrp1, '', t0.U_SubGrp5)
+            )
+            OR EXISTS (
+                SELECT 1 FROM [BBLive].[dbo]."@INS_OPLM" plm
+                INNER JOIN [BBLive].[dbo]."@INS_PLM2" plm2 ON plm2.DocEntry = plm.DocEntry
+                WHERE plm.U_ItemCode = t0.ItemCode AND plm2.U_SelPrice > 0
+            )
+        )`;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Paginated product list with push status joined from [SFA_RecordPushStatus]
 // opts: { page, limit, search, pushStatus, division }
@@ -1290,11 +1312,7 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
         JOIN [BBLive].[dbo].oitb t1 ON t0.ItmsGrpCod = t1.ItmsGrpCod
         LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] ps
             ON ps.MasterType = 'products' AND ps.RecordKey = t0.ItemCode
-        WHERE EXISTS (
-            SELECT 1 FROM [BBLive].[dbo]."@INS_OPLM" plm
-            INNER JOIN [BBLive].[dbo]."@INS_PLM2" plm2 ON plm2.DocEntry = plm.DocEntry
-            WHERE plm.U_ItemCode = t0.ItemCode AND plm2.U_SelPrice > 0
-        )
+        WHERE ${PRICED_ITEM_FILTER}
         AND t0.validFor = 'Y'
         AND t0.U_SubGrp1 NOT IN (
             'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
@@ -1319,11 +1337,7 @@ async function getProductsPaged({ page = 1, limit = 50, search, pushStatus, divi
         JOIN [BBLive].[dbo].oitb t1 ON t0.ItmsGrpCod = t1.ItmsGrpCod
         LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] ps
             ON ps.MasterType = 'products' AND ps.RecordKey = t0.ItemCode
-        WHERE EXISTS (
-            SELECT 1 FROM [BBLive].[dbo]."@INS_OPLM" plm
-            INNER JOIN [BBLive].[dbo]."@INS_PLM2" plm2 ON plm2.DocEntry = plm.DocEntry
-            WHERE plm.U_ItemCode = t0.ItemCode AND plm2.U_SelPrice > 0
-        )
+        WHERE ${PRICED_ITEM_FILTER}
         AND t0.validFor = 'Y'
         AND t0.U_SubGrp1 NOT IN (
             'ACCESSORIES','ADVERTISEMENT','ALL','SAMPLE','PRINTING & STATIONERY',
