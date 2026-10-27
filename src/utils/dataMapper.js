@@ -558,6 +558,53 @@ function mapToInvoicePayload(rows) {
     }));
 }
 
+// Returns [{ key: DocEntry, docNum, saleReturn }] — key/docNum are for status tracking only;
+// `saleReturn` is the object that goes inside { SyncMethod, SaleReturnHeader: [...] }
+function mapToSaleReturnPayload(rows) {
+    if (!rows || rows.length === 0) return [];
+
+    const status     = process.env.SF_SALERETURN_STATUS      || 'Draft';
+    const namePrefix = process.env.SF_SALERETURN_NAME_PREFIX ?? 'SR-';
+    const employeeId = process.env.SF_SALERETURN_DEFAULT_EMPLOYEE_ID || '';
+
+    return rows.map(row => ({
+        key   : String(row.DocEntry),
+        docNum: row.DocNum,
+        saleReturn: {
+            cardCode     : row.cardCode,
+            divisionCode : row.divisionCode ?? '',
+            documentDate : row.documentDate,
+            totalAmount  : toNumber(row.totalAmount) ?? 0,
+            remarks      : row.remarks ?? '',
+            status,
+            name         : `${namePrefix}${row.DocNum}`,
+            returnType   : '',
+            DocType      : String(row.DocType ?? '14'),
+            DocEntry     : Number(row.DocEntry),
+            DocNum       : Number(row.DocNum),
+            EmployeeId   : employeeId,
+            SaleReturnDetails: (row.Lines || []).map(l => ({
+                Itemcode    : l.Itemcode,
+                CatalogName : l.CatalogName ?? '',
+                ColorCode   : l.ColorCode ?? '',
+                Size        : l.Size ?? '',
+                Style       : l.Style ?? '',
+                Quantity    : toNumber(l.Quantity) ?? 0,
+                Price       : toNumber(l.Price) ?? 0,
+                TaxAmount   : toNumber(l.TaxAmount) ?? 0
+            }))
+        }
+    }));
+}
+
+// SyncMethod is a fixed flag expected by SaleReturnAPI (1 in the reference request)
+function buildSaleReturnBody(items) {
+    return {
+        SyncMethod      : parseInt(process.env.SF_SALERETURN_SYNC_METHOD, 10) || 1,
+        SaleReturnHeader: items.map(i => i.saleReturn)
+    };
+}
+
 module.exports = {
     mapToSalesforcePayload,
     mapToPriceListPayload,
@@ -568,5 +615,7 @@ module.exports = {
     buildPayload,
     mapToStockPayload,
     mapToOutstandingPayload,
-    mapToInvoicePayload
+    mapToInvoicePayload,
+    mapToSaleReturnPayload,
+    buildSaleReturnBody
 };

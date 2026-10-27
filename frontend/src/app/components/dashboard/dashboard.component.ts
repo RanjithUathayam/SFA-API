@@ -60,6 +60,12 @@ export class DashboardComponent {
       link: '/master/invoice',
     },
     {
+      icon: '↩️',
+      title: 'Sale Returns',
+      desc: 'View SAP A/R credit memos by date, preview the exact JSON, and push sale returns with line items to Salesforce.',
+      link: '/master/salereturn',
+    },
+    {
       icon: '👨‍💼',
       title: 'E-HR Attendance',
       desc: 'Monitor attendance punch logs and manually trigger SF→DB sync and DB→EHR API push.',
@@ -68,7 +74,7 @@ export class DashboardComponent {
     {
       icon: '🔄',
       title: 'Sync Center',
-      desc: 'Trigger bulk Salesforce sync for products, price lists, images, schemes, BPs, stock, outstanding and invoices — sync all or select specific records.',
+      desc: 'Trigger bulk Salesforce sync for products, price lists, images, schemes, BPs, stock, outstanding, invoices and sale returns — sync all or select specific records.',
       link: '/sync',
     },
   ];

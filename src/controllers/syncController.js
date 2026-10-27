@@ -144,10 +144,9 @@ exports.syncProducts = async (req, res) => {
 // POST /api/sync/productTrigger
 //
 // Product Scheduler — processes every pending OITM row one item at a time:
-//   1. Pull the next OITM row with U_SFAItemActiveStatus = 'Yes' and
+//   1. Pull the pending OITM queue once: U_SFAItemActiveStatus = 'Yes' and
 //      U_SFATriggerStatus <> 'Y', or U_SFAItemActiveStatus = 'No' and
-//      U_SFATriggerStatus = 'N' (ItemCode greater than the last one
-//      attempted in this run).
+//      U_SFATriggerStatus = 'N'.
 //   2. Sync that single ItemCode to Salesforce.
 //   3. Only on confirmed success, flip U_SFATriggerStatus to 'Y'.
 //   4. Move on to the next item — a failed / not-found item never blocks the
@@ -184,15 +183,12 @@ exports.syncNextTriggeredProduct = async (req, res) => {
     divider('PRODUCT TRIGGER SYNC START');
 
     const summary = { processed: 0, success: 0, skipped: 0, failed: 0, items: [] };
-    let lastCode  = null;
 
     try {
-        while (true) {
-            const trigger = await dbService.getNextPendingProductTrigger(lastCode);
-            if (!trigger) break;
+        const triggers = await dbService.getPendingProductTriggers();
+        log.info(`Pending items in queue : ${triggers.length}`);
 
-            const { ItemCode, ItemName } = trigger;
-            lastCode = ItemCode;
+        for (const { ItemCode, ItemName } of triggers) {
             summary.processed++;
             log.info(`[${summary.processed}] Pending item found : ${ItemCode} (${ItemName})`);
 
@@ -242,6 +238,8 @@ exports.syncNextTriggeredProduct = async (req, res) => {
             elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
             processed     : summary.processed,
             success       : summary.success,
+            skipped       : summary.skipped,
+            failed        : summary.failed,
             error         : err.message
         });
     }
@@ -960,5 +958,99 @@ exports.syncInvoices = async (req, res) => {
         });
     } finally {
         invoiceSyncRunning = false;
+    }
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/sync/salereturn
+// Body (all optional):
+//   codes       : ["79599", ...]    ORIN.DocEntry — push exactly these (any date, any status)
+//   fromDate    : "YYYY-MM-DD"      default SF_SALERETURN_SYNC_FROM_DATE, else today (IST)
+//   toDate      : "YYYY-MM-DD"      default SF_SALERETURN_SYNC_TO_DATE,   else today (IST)
+//   onlyPending : boolean           default true — skip returns already Pushed
+// Every result is recorded in SFA_RecordPushStatus (MasterType='salereturn').
+// ─────────────────────────────────────────────────────────────────────────────
+let saleReturnSyncRunning = false;
+
+exports.syncSaleReturns = async (req, res) => {
+    if (saleReturnSyncRunning) {
+        const msg = 'Sale return sync is already running. Try again when it finishes.';
+        return res.status(409).json({ message: msg, error: msg });
+    }
+    saleReturnSyncRunning = true;
+
+    const startTime   = Date.now();
+    const codes       = Array.isArray(req.body?.codes) ? req.body.codes.filter(Boolean).map(String) : [];
+    const selective   = codes.length > 0;
+    const onlyPending = req.body?.onlyPending !== false;
+    const window      = dbService.resolveSaleReturnWindow({ fromDate: req.body?.fromDate, toDate: req.body?.toDate });
+    divider('SALE RETURN SYNC START');
+
+    try {
+        await recordPushSvc.ensureTable();
+
+        log.info(selective
+            ? `Selective sync requested for ${codes.length} sale return(s)`
+            : `Fetching sale returns ${window.fromDate} → ${window.toDate} (${onlyPending ? 'pending/failed only' : 'all'})...`);
+        const sqlData = selective
+            ? await dbService.getSaleReturnData({ docEntries: codes })
+            : await dbService.getSaleReturnData({ ...window, onlyPending });
+        log.info(`Fetched ${sqlData.length} sale return(s)`);
+
+        const base = {
+            elapsedSeconds: 0,
+            mode          : selective ? 'selected' : 'all',
+            ...(selective ? { requestedCount: codes.length } : { window, onlyPending }),
+            dbRowsFetched : sqlData.length,
+        };
+
+        if (!sqlData.length) {
+            log.warn('No sale returns to sync.');
+            return res.status(200).json({
+                ...base,
+                message: selective ? 'No sale returns found for the selected records.' : 'No pending sale returns to sync.',
+                elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+                successRecords: 0, failedRecords: 0, failedDetails: [],
+            });
+        }
+
+        const payload = mapper.mapToSaleReturnPayload(sqlData);
+        payload.slice(0, 3).forEach((p, i) =>
+            log.info(`  [${i + 1}] DocNum ${p.docNum} | ${p.saleReturn.cardCode} | Lines: ${p.saleReturn.SaleReturnDetails.length} | Total: ${p.saleReturn.totalAmount}`)
+        );
+        const sfResult = await sfService.upsertSaleReturns(payload, {
+            onBatchResult: (keys, ok, error) => recordPushSvc.setBulkResults('salereturn',
+                keys.map(k => ({ recordKey: k, success: ok, errorMessage: error }))),
+        });
+
+        divider('SALE RETURN SYNC COMPLETE');
+        log.ok  (`Elapsed           : ${elapsed(startTime)}`);
+        log.info(`Returns sent      : ${sfResult.totalRecords}`);
+        log.ok  (`Success           : ${sfResult.successRecords}`);
+        if (sfResult.failedRecords > 0) log.error(`Failed            : ${sfResult.failedRecords}`);
+        divider();
+
+        return res.status(200).json({
+            ...base,
+            message: sfResult.failedRecords === 0
+                ? 'Sale Return Sync Completed Successfully'
+                : sfResult.successRecords === 0
+                    ? 'Sale Return Sync Failed for all returns'
+                    : 'Sale Return Sync Completed with some failures',
+            elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            ...sfResult
+        });
+
+    } catch (err) {
+        divider('SALE RETURN SYNC ERROR');
+        log.error(`Sync failed after ${elapsed(startTime)}: ${err.message}`);
+        divider();
+        return res.status(500).json({
+            message       : 'Sale Return Sync Failed',
+            elapsedSeconds: parseFloat(((Date.now() - startTime) / 1000).toFixed(2)),
+            error         : err.message,
+            details       : err.response?.data ?? null
+        });
+    } finally {
+        saleReturnSyncRunning = false;
     }
 };

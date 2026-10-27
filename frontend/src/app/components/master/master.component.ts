@@ -24,6 +24,7 @@ export interface MasterConfig {
   hasProductGroupFilter?: boolean;
   hasDateFilter?: boolean;     // From/To date inputs → fromDate/toDate query params
   previewable?: boolean;       // per-row "JSON" button → GET /api/master/:type/preview/:key
+  docLabel?: string;           // document name shown with DocNum, e.g. "Invoice 1234"
 }
 
 function fmtNum(v: any): string {
@@ -99,7 +100,7 @@ export const MASTER_CONFIG: Record<string, MasterConfig> = {
   },
   invoice: {
     title: 'AR Invoices', desc: 'View SAP A/R invoices for dealer customers by date, track push status, and push to Salesforce InvoiceAPI.',
-    icon: '🧾', recordKeyField: 'DocEntry', hasDateFilter: true, previewable: true,
+    icon: '🧾', recordKeyField: 'DocEntry', hasDateFilter: true, previewable: true, docLabel: 'Invoice',
     columns: [
       { key: 'DocNum',        label: 'Invoice No', cls: 'mono' },
       { key: 'DocDate',       label: 'Date' },
@@ -110,6 +111,22 @@ export const MASTER_CONFIG: Record<string, MasterConfig> = {
       { key: 'LineCount',     label: 'Lines',      align: 'right' },
       { key: 'TotalQuantity', label: 'Qty',        align: 'right' },
       { key: 'DocTotal',      label: 'Doc Total',  align: 'right', fmt: fmtNum },
+    ],
+  },
+  salereturn: {
+    title: 'Sale Returns', desc: 'View SAP A/R credit memos (sale returns) by date, track push status, and push to Salesforce SaleReturnAPI.',
+    icon: '↩️', recordKeyField: 'DocEntry', hasDateFilter: true, previewable: true, docLabel: 'Sale Return',
+    columns: [
+      { key: 'DocNum',        label: 'Return No',     cls: 'mono' },
+      { key: 'DocDate',       label: 'Date' },
+      { key: 'CardCode',      label: 'Card Code',     cls: 'mono' },
+      { key: 'CardName',      label: 'Customer' },
+      { key: 'CustomerType',  label: 'Cust. Type' },
+      { key: 'DivisionCode',  label: 'Division' },
+      { key: 'LineCount',     label: 'Lines',         align: 'right' },
+      { key: 'TotalQuantity', label: 'Qty',           align: 'right' },
+      { key: 'DocTotal',      label: 'Total Amount',  align: 'right', fmt: fmtNum },
+      { key: 'Remarks',       label: 'Remarks' },
     ],
   },
 };
@@ -362,7 +379,7 @@ export class MasterComponent implements OnInit, OnDestroy {
 
   openPreview(row: any) {
     const key = this.getKey(row);
-    const label = row.DocNum != null ? `Invoice ${row.DocNum}` : key;
+    const label = row.DocNum != null ? `${this.cfg.docLabel ?? 'Doc'} ${row.DocNum}` : key;
     this.preview = { key, label, loading: true };
     this.api.previewMaster(this.masterType, key).subscribe({
       next: (data) => {

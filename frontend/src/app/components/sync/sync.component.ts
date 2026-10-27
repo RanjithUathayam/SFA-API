@@ -35,6 +35,7 @@ export interface SyncCardConfig {
   hasDivisionFilter?: boolean;
   hasProductGroupFilter?: boolean;
   cronNote: string;
+  docLabel?: string;         // failed docs listed as "<docLabel> <DocNum> (DocEntry n)"
 }
 
 const PRODUCT_COLUMNS: ColumnDef[] = [
@@ -101,6 +102,15 @@ export const SYNC_CONFIG: SyncCardConfig[] = [
     supportsSelection: true, masterType: 'invoice',
     recordKeyField: MASTER_CONFIG['invoice'].recordKeyField, columns: MASTER_CONFIG['invoice'].columns,
     cronNote: 'Manual by default. Set SF_INVOICE_SYNC_CRON in .env (e.g. */30 * * * *) to run it on a schedule.',
+    docLabel: MASTER_CONFIG['invoice'].docLabel,
+  },
+  {
+    key: 'salereturn', title: 'Sale Returns', icon: '↩️',
+    desc: 'Push SAP A/R credit memos (header + lines) to Salesforce SaleReturnAPI. Sync All sends only returns not yet pushed (Pending / Failed) from SF_SALERETURN_SYNC_FROM_DATE to today. Cancelled memos are never sent.',
+    supportsSelection: true, masterType: 'salereturn',
+    recordKeyField: MASTER_CONFIG['salereturn'].recordKeyField, columns: MASTER_CONFIG['salereturn'].columns,
+    cronNote: 'Manual by default. Set SF_SALERETURN_SYNC_CRON in .env (e.g. */30 * * * *) to run it on a schedule.',
+    docLabel: MASTER_CONFIG['salereturn'].docLabel,
   },
 ];
 
@@ -108,15 +118,15 @@ function errStr(e: any): string {
   return typeof e === 'string' ? e : JSON.stringify(e);
 }
 
-function normalizeResult(raw: any, requestedCount?: number): SyncResult {
+function normalizeResult(raw: any, requestedCount?: number, docLabel = 'Doc'): SyncResult {
   const failedList: string[] = [];
   if (Array.isArray(raw.failedProducts)) failedList.push(...raw.failedProducts.map((c: any) => String(c)));
   if (Array.isArray(raw.failedDetails)) {
     for (const f of raw.failedDetails) {
       if (Array.isArray(f.codes) && f.codes.length) {
-        // Invoices carry docNums alongside DocEntry codes — show the invoice number
+        // Invoices / sale returns carry docNums alongside DocEntry codes — show the document number
         const labels = Array.isArray(f.docNums) && f.docNums.length === f.codes.length
-          ? f.codes.map((c: any, i: number) => `Invoice ${f.docNums[i]} (DocEntry ${c})`)
+          ? f.codes.map((c: any, i: number) => `${docLabel} ${f.docNums[i]} (DocEntry ${c})`)
           : f.codes;
         failedList.push(...labels.map((c: any) => `${c}: ${errStr(f.error)}`));
       } else if (f.code) {
@@ -207,7 +217,7 @@ export class SyncComponent implements OnDestroy {
 
     this.api.runSync(cfg.key, codes).subscribe({
       next: (raw) => {
-        const result = normalizeResult(raw, codes?.length);
+        const result = normalizeResult(raw, codes?.length, cfg.docLabel);
         this.results[cfg.key] = result;
         this.showToast(
           `${cfg.title}: ${result.message}`,

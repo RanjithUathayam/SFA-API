@@ -905,6 +905,107 @@ async function upsertInvoices(items, { onBatchResult } = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SALE RETURNS — POST { SyncMethod, SaleReturnHeader: [...] } to SaleReturnAPI
+// Default 1 return per request so a bad document never blocks the others.
+// ─────────────────────────────────────────────────────────────────────────────
+const { buildSaleReturnBody } = require('../utils/dataMapper');
+
+const SALE_RETURN_BATCH_SIZE  = parseInt(process.env.SF_BATCH_SIZE_SALERETURN,  10) || 1;
+const SALE_RETURN_CONCURRENCY = parseInt(process.env.SF_SALERETURN_CONCURRENCY, 10) || CONCURRENCY;
+
+/**
+ * @param {Array<{key:string, docNum:number, saleReturn:object}>} items  from mapToSaleReturnPayload
+ * @param {{ onBatchResult?: (keys:string[], ok:boolean, error:string|null) => Promise<void> }} [opts]
+ *        called after every request so push status can be recorded as the sync progresses
+ */
+async function upsertSaleReturns(items, { onBatchResult } = {}) {
+    if (!Array.isArray(items) || items.length === 0) {
+        log.warn('upsertSaleReturns: nothing to send.');
+        return { totalRecords: 0, totalBatches: 0, successBatches: 0, failedBatches: 0, successRecords: 0, failedRecords: 0, failedDetails: [] };
+    }
+
+    const url = process.env.SF_API_URL_SaleReturn;
+    if (!url) throw new Error('SF_API_URL_SaleReturn is not set in .env');
+
+    const token   = process.env.SF_SALERETURN_ACCESS_TOKEN || await getSalesforceToken();
+    const headers = {
+        'Content-Type': 'application/json',
+        Authorization : `Bearer ${token}`
+    };
+
+    const batches = [];
+    for (let i = 0; i < items.length; i += SALE_RETURN_BATCH_SIZE) batches.push(items.slice(i, i + SALE_RETURN_BATCH_SIZE));
+
+    const total      = items.length;
+    const totalBatch = batches.length;
+    const summary    = { success: [], failed: [] };
+
+    log.divider('SALE RETURN UPSERT START');
+    log.info(`Total returns    : ${total}`);
+    log.info(`Per request      : ${SALE_RETURN_BATCH_SIZE}`);
+    log.info(`Concurrency      : ${SALE_RETURN_CONCURRENCY}`);
+    log.info(`Endpoint         : ${url}`);
+    log.divider();
+
+    const report = async (keys, ok, error) => {
+        if (!onBatchResult) return;
+        try { await onBatchResult(keys, ok, error); }
+        catch (e) { log.warn(`Sale return status write failed for ${keys.join(',')}: ${e.message}`); }
+    };
+
+    const tasks = batches.map((batch, idx) => async () => {
+        const batchNum = idx + 1;
+        const keys     = batch.map(b => b.key);
+        const docNums  = batch.map(b => b.docNum);
+        const label    = `SALE RETURN ${docNums.join(',')}`;
+        const body     = buildSaleReturnBody(batch);
+
+        try {
+            const response = await withRetry(
+                () => axios.post(url, body, { headers, timeout: REQ_TIMEOUT }),
+                label
+            );
+            verifySFResponse(response, label);
+            summary.success.push({ batch: batchNum, count: batch.length, codes: keys, docNums, status: response.status, data: response.data });
+            log.ok(`[${summary.success.length + summary.failed.length}/${totalBatch}] ${label} — HTTP ${response.status} OK`);
+            await report(keys, true, null);
+
+        } catch (err) {
+            const status = err.response?.status ?? 'N/A';
+            const error  = err.response?.data   ?? err.message;
+            summary.failed.push({ batch: batchNum, count: batch.length, codes: keys, docNums, status, error });
+            log.error(`[${summary.success.length + summary.failed.length}/${totalBatch}] ${label} — HTTP ${status} FAILED`);
+            log.error(`  Detail: ${JSON.stringify(error)}`);
+            await report(keys, false, typeof error === 'string' ? error : JSON.stringify(error));
+        }
+
+        const done = summary.success.length + summary.failed.length;
+        if (done % 10 === 0 || done === totalBatch) log.progress(done, totalBatch, 'sale return requests');
+    });
+
+    await runWithConcurrency(tasks, SALE_RETURN_CONCURRENCY);
+
+    const successRecords = summary.success.reduce((n, b) => n + b.count, 0);
+    const failedRecords  = summary.failed.reduce((n, b) => n + b.count, 0);
+
+    log.divider('SALE RETURN UPSERT SUMMARY');
+    log.info(`Total Sent : ${total}`);
+    log.ok  (`Success    : ${successRecords}`);
+    if (failedRecords > 0) log.error(`Failed     : ${failedRecords}`);
+    log.divider();
+
+    return {
+        totalRecords  : total,
+        totalBatches  : totalBatch,
+        successBatches: summary.success.length,
+        failedBatches : summary.failed.length,
+        successRecords,
+        failedRecords,
+        failedDetails : summary.failed.map(({ batch, codes, docNums, status, error }) => ({ batch, codes, docNums, status, error }))
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ATTENDANCE — Fetch from dmpl__ResourceAvailabilityData__c
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -969,5 +1070,6 @@ module.exports = {
     upsertStockInventory,
     upsertOutstanding,
     upsertInvoices,
+    upsertSaleReturns,
     fetchAttendanceRecords
 };

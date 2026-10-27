@@ -131,6 +131,21 @@ const MASTERS = {
             };
         },
     },
+
+    salereturn: {
+        masterType:    'salereturn',
+        recordKeyField: 'DocEntry',
+        fetchPaged:    (opts)  => dbService.getSaleReturnsPaged(opts),
+        fetchByCodes:  (codes) => dbService.getSaleReturnData({ docEntries: codes }),
+        mapPayload:    (rows)  => mapper.mapToSaleReturnPayload(rows),
+        sfPush:        (pl)    => sfService.upsertSaleReturns(pl),
+        // Exact JSON body POSTed to SaleReturnAPI for one return
+        previewBody:   (pl)    => mapper.buildSaleReturnBody(pl),
+        // Same failedDetails shape as invoices
+        extractResults(sfResult, requestedKeys) {
+            return MASTERS.invoice.extractResults(sfResult, requestedKeys);
+        },
+    },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

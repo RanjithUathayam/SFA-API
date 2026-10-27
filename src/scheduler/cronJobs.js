@@ -62,6 +62,7 @@ let productApiSyncRunning    = false;
 let priceListApiSyncRunning  = false;
 let bpApiSyncRunning         = false;
 let invoiceApiSyncRunning    = false;
+let saleReturnApiSyncRunning = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stock inventory sync
@@ -629,6 +630,45 @@ async function runInvoiceApiSync() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sale return API sync — reuses syncController.syncSaleReturns (same as the
+// manual POST /api/sync/salereturn). Pushes only Pending/Failed returns in the
+// SF_SALERETURN_SYNC_FROM_DATE → today window. Scheduled only if
+// SF_SALERETURN_SYNC_CRON is set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runSaleReturnApiSync() {
+    if (saleReturnApiSyncRunning) {
+        log.warn('Sale Return API sync already in progress — skipping this tick.');
+        return;
+    }
+    saleReturnApiSyncRunning = true;
+    const startTime = Date.now();
+    log.banner('SALE RETURN API SYNC START');
+
+    try {
+        const { mockReq, mockRes, promise } = buildMockContext();
+        mockReq.body = { onlyPending: true };
+        await syncController.syncSaleReturns(mockReq, mockRes);
+        const { statusCode, data } = await promise;
+
+        if (statusCode >= 400) {
+            log.error(`Sale Return API Sync FAILED (HTTP ${statusCode}) after ${elapsed(startTime)}: ${data?.error ?? data?.message}`);
+        } else {
+            log.ok(`Sale Return API Sync COMPLETE — elapsed: ${elapsed(startTime)}`);
+            log.info(`  Returns fetched  : ${data?.dbRowsFetched ?? 0}`);
+            log.ok  (`  Succeeded        : ${data?.successRecords ?? 0}`);
+            if (data?.failedRecords > 0) log.error(`  Failed           : ${data.failedRecords}`);
+        }
+    } catch (err) {
+        log.error(`Sale Return API Sync FAILED after ${elapsed(startTime)}: ${err.message}`);
+        log.error(err.stack);
+    } finally {
+        saleReturnApiSyncRunning = false;
+        log.banner('SALE RETURN API SYNC END');
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Attendance sync (Check-In at 14:00 IST, Check-Out at 23:30 IST)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -965,6 +1005,17 @@ function startCronJobs() {
         log.info('Invoice API Sync not scheduled (SF_INVOICE_SYNC_CRON is not set) — manual trigger only.');
     }
 
+    if (process.env.SF_SALERETURN_SYNC_CRON) 
+    {
+        scheduleCron(process.env.SF_SALERETURN_SYNC_CRON, `Sale Return API Sync (${process.env.SF_SALERETURN_SYNC_CRON})`,
+            async () => { await runSaleReturnApiSync(); }
+        );
+    } 
+    else
+    {
+        log.info('Sale Return API Sync not scheduled (SF_SALERETURN_SYNC_CRON is not set) — manual trigger only.');
+    }
+    
     scheduleDaily(0, 30, 'Product API Sync (12:30 AM IST)',
         async () => { await runProductApiSync(); }
     );
@@ -1023,4 +1074,4 @@ process.on('uncaughtException', (err) => {
     log.error(err.stack);
 });
 
-module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync, runBusinessPartnerApiSync, runInvoiceApiSync };
+module.exports = { startCronJobs, runAttendanceSync, runEhrPushSync, runStockInventoryApiSync, runProductApiSync, runPriceListApiSync, runBusinessPartnerApiSync, runInvoiceApiSync, runSaleReturnApiSync };

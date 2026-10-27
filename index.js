@@ -77,6 +77,7 @@ app.post('/api/sync/businessPartnerTrigger', syncController.syncNextTriggeredBus
 app.post('/api/sync/stockInventory',    syncController.syncStockInventory);
 app.post('/api/sync/outstanding',       syncController.syncOutstanding);
 app.post('/api/sync/invoice',           syncController.syncInvoices);
+app.post('/api/sync/salereturn',        syncController.syncSaleReturns);
 
 // ── Dashboard & push routes ────────────────────────────────────────────────
 app.get ('/api/dashboard/status', pushController.getDashboardStatus);
@@ -134,6 +135,7 @@ app.listen(PORT, () => {
     console.log(` - POST /api/sync/stockInventory`);
     console.log(` - POST /api/sync/outstanding`);
     console.log(` - POST /api/sync/invoice`);
+    console.log(` - POST /api/sync/salereturn`);
 
     startCronJobs();
 });

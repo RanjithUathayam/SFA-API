@@ -1519,23 +1519,18 @@ async function getProductDataByCodes(productCodes) {
 //     legacy 'No' items with NULL trigger are not mass-synced.
 // 'Y' = already synced.
 // ─────────────────────────────────────────────────────────────────────────────
-// afterCode: last ItemCode attempted in the current run. Only rows with a
-// greater ItemCode are returned, so a failed / not-found item is skipped and
-// the scheduler moves on to the next pending item instead of picking the same
-// stuck row forever. Failed items stay pending and are retried next run.
-async function getNextPendingProductTrigger(afterCode = null) {
-    const pool    = await getPool();
-    const request = pool.request();
+// Returns the whole pending queue in ONE query, read WITH (NOLOCK). Querying
+// OITM once per item (TOP 1 ... ItemCode > @AfterCode) under READ COMMITTED
+// got blocked by SAP B1's own OITM row locks (stock postings) and hit mssql's
+// 15s request timeout, aborting the entire run. A dirty read is safe here:
+// each item is re-read by getProductDataByCodes() before it is pushed, and a
+// failed item simply stays pending for the next run.
+async function getPendingProductTriggers() {
+    const pool = await getPool();
 
-    let afterClause = '';
-    if (afterCode) {
-        request.input('AfterCode', sql.NVarChar(50), afterCode);
-        afterClause = 'AND ItemCode > @AfterCode';
-    }
-
-    const result = await request.query(`
-        SELECT TOP 1 ItemCode, ItemName
-        FROM [BBLive].[dbo].OITM
+    const result = await pool.request().query(`
+        SELECT ItemCode, ItemName
+        FROM [BBLive].[dbo].OITM WITH (NOLOCK)
         WHERE (
                 (U_SFAItemActiveStatus = 'Yes' AND ISNULL(U_SFATriggerStatus, '') <> 'Y')
              OR (U_SFAItemActiveStatus = 'No'  AND U_SFATriggerStatus = 'N')
@@ -1546,11 +1541,10 @@ async function getNextPendingProductTrigger(afterCode = null) {
             'SALES PROMOTION EXPENSES','EVERYDAY DHOTIE','ALLDAYS DHOTIE',
             'ADD DHOTIE','ADD SHIRT','EVERYDAY SHIRTING','EVERYDAY RDY'
           )
-          ${afterClause}
         ORDER BY ItemCode
     `);
 
-    return result.recordset[0] || null;
+    return result.recordset;
 }
 
 async function markProductTriggerSynced(itemCode) {
@@ -2812,6 +2806,285 @@ async function getInvoiceData({ docEntries, fromDate, toDate, onlyPending = fals
     return headers;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SALE RETURNS — ORIN / RIN1 (A/R Credit Memo) → Salesforce SaleReturnAPI
+// Push status lives in SFA_RecordPushStatus with MasterType='salereturn' and
+// RecordKey = ORIN.DocEntry. Cancelled memos and their cancellation documents
+// (CANCELED 'Y' / 'C') are never sent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Explicit dates win, then SF_SALERETURN_SYNC_FROM_DATE / _TO_DATE, then today (IST)
+function resolveSaleReturnWindow({ fromDate, toDate } = {}) {
+    const pick = (v, envVal) => DATE_RE.test(v || '') ? v : DATE_RE.test(envVal || '') ? envVal : todayIst();
+    return {
+        fromDate: pick(fromDate, process.env.SF_SALERETURN_SYNC_FROM_DATE),
+        toDate  : pick(toDate,   process.env.SF_SALERETURN_SYNC_TO_DATE),
+    };
+}
+
+function saleReturnRepushOnUpdate() {
+    return String(process.env.SF_SALERETURN_REPUSH_ON_UPDATE).toLowerCase() === 'true' ? 1 : 0;
+}
+
+// SF_SALERETURN_CUSTOMER_TYPES=DE,DR → only those OCRD.U_showcode values (unset = all customers)
+function saleReturnCustomerTypes() {
+    return String(process.env.SF_SALERETURN_CUSTOMER_TYPES || '')
+        .split(',').map(s => s.trim()).filter(Boolean);
+}
+
+// Adds @ct0..n inputs to the request and returns the matching SQL condition
+function saleReturnCustomerFilter(req) {
+    const types = saleReturnCustomerTypes();
+    if (!types.length) return '1 = 1';
+    const placeholders = types.map((t, i) => { req.input(`ct${i}`, sql.NVarChar(20), t); return `@ct${i}`; }).join(',');
+    return `C.U_showcode IN (${placeholders})`;
+}
+
+// Same effective-status rules as invoices (see INVOICE_BASE_FROM)
+const SALE_RETURN_BASE_FROM = `
+    FROM [BBLive].[dbo].[ORIN] T1 WITH (NOLOCK)
+    LEFT JOIN [BBLive].[dbo].[OCRD] C WITH (NOLOCK)
+        ON C.CardCode = T1.CardCode
+    LEFT JOIN [BBLive].[dbo].[SFA_RecordPushStatus] rp
+        ON rp.MasterType = 'salereturn'
+       AND rp.RecordKey  = CAST(T1.DocEntry AS NVARCHAR(100))
+    CROSS APPLY (
+        SELECT CASE
+            WHEN rp.PushStatus IS NULL THEN 'Pending'
+            WHEN rp.PushStatus = 'Pushing' AND rp.UpdatedAt < DATEADD(MINUTE, -30, GETDATE()) THEN 'Pending'
+            WHEN rp.PushStatus = 'Pushed' AND @repush = 1
+                 AND DATEADD(SECOND,
+                         (ISNULL(T1.UpdateTS, 0) / 10000) * 3600
+                       + (ISNULL(T1.UpdateTS, 0) / 100 % 100) * 60
+                       +  ISNULL(T1.UpdateTS, 0) % 100,
+                         T1.UpdateDate) > rp.UpdatedAt THEN 'Pending'
+            ELSE rp.PushStatus
+        END AS PushStatus
+    ) ST`;
+
+const SALE_RETURN_DATE_FILTER = `
+    T1.DocDate >= CAST(@fromDate AS DATE)
+    AND T1.DocDate < DATEADD(DAY, 1, CAST(@toDate AS DATE))
+    AND T1.CANCELED = 'N'`;
+
+// Division of a return = sub-group 1 of its first item line (ARISER / UATHAYAM)
+const saleReturnDivisionApply = (alias) => `
+    OUTER APPLY (
+        SELECT TOP 1
+            CASE
+                WHEN I.U_SubGrp1 LIKE '%ARISER%'   THEN 'ARISER'
+                WHEN I.U_SubGrp1 LIKE '%UATHAYAM%' THEN 'UATHAYAM'
+                ELSE I.U_SubGrp1
+            END AS DivisionCode
+        FROM [BBLive].[dbo].[RIN1] D WITH (NOLOCK)
+        INNER JOIN [BBLive].[dbo].[OITM] I WITH (NOLOCK) ON I.ItemCode = D.ItemCode
+        WHERE D.DocEntry = ${alias}.DocEntry
+        ORDER BY D.LineNum
+    ) DV`;
+
+async function getSaleReturnsPaged({ page = 1, limit = 50, search, pushStatus, fromDate, toDate } = {}) {
+    const pool      = await getPool();
+    const offset    = (page - 1) * limit;
+    const searchVal = search     ? `%${search}%` : null;
+    const statusVal = pushStatus || null;
+    const window    = resolveSaleReturnWindow({ fromDate, toDate });
+    const repush    = saleReturnRepushOnUpdate();
+
+    const withWindow = (r) => r
+        .input('fromDate', sql.NVarChar(10), window.fromDate)
+        .input('toDate',   sql.NVarChar(10), window.toDate)
+        .input('repush',   sql.Bit,          repush);
+
+    const dataReq    = withWindow(pool.request());
+    const summaryReq = withWindow(pool.request());
+    const dataCustFilter    = saleReturnCustomerFilter(dataReq);
+    const summaryCustFilter = saleReturnCustomerFilter(summaryReq);
+
+    const dataQuery = `
+        WITH Ret AS (
+            SELECT
+                T1.DocEntry, T1.DocNum, T1.DocDate, T1.CardCode, T1.CardName, T1.DocTotal, T1.Comments,
+                ISNULL(C.U_showcode, '') AS CustomerType,
+                ST.PushStatus, rp.LastPushedAt, rp.ErrorMessage AS PushError
+            ${SALE_RETURN_BASE_FROM}
+            WHERE ${SALE_RETURN_DATE_FILTER}
+              AND ${dataCustFilter}
+              AND (@search IS NULL
+                   OR T1.CardCode LIKE @search
+                   OR T1.CardName LIKE @search
+                   OR T1.Comments LIKE @search
+                   OR CAST(T1.DocNum AS NVARCHAR(20)) LIKE @search)
+        ),
+        Paged AS (
+            SELECT COUNT(*) OVER() AS TotalCount, *
+            FROM Ret
+            WHERE (@pushStatus IS NULL OR PushStatus = @pushStatus)
+            ORDER BY DocDate DESC, DocEntry DESC
+            OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+        )
+        SELECT
+            P.TotalCount,
+            CAST(P.DocEntry AS NVARCHAR(20))                  AS DocEntry,
+            P.DocNum,
+            CONVERT(CHAR(10), P.DocDate, 23)                  AS DocDate,
+            LTRIM(RTRIM(P.CardCode))                          AS CardCode,
+            P.CardName,
+            P.CustomerType,
+            ISNULL(DV.DivisionCode, '')                       AS DivisionCode,
+            ISNULL(L.LineCount, 0)                            AS LineCount,
+            CAST(ISNULL(L.TotalQuantity, 0) AS DECIMAL(18,2)) AS TotalQuantity,
+            CAST(P.DocTotal AS DECIMAL(18,2))                 AS DocTotal,
+            ISNULL(P.Comments, '')                            AS Remarks,
+            P.PushStatus, P.LastPushedAt, P.PushError
+        FROM Paged P
+        ${saleReturnDivisionApply('P')}
+        OUTER APPLY (
+            SELECT COUNT(*) AS LineCount, SUM(R.Quantity) AS TotalQuantity
+            FROM [BBLive].[dbo].[RIN1] R WITH (NOLOCK)
+            WHERE R.DocEntry = P.DocEntry
+        ) L
+        ORDER BY P.DocDate DESC, P.DocEntry DESC
+    `;
+
+    const summaryQuery = `
+        SELECT ST.PushStatus, COUNT(*) AS Count
+        ${SALE_RETURN_BASE_FROM}
+        WHERE ${SALE_RETURN_DATE_FILTER}
+          AND ${summaryCustFilter}
+        GROUP BY ST.PushStatus
+    `;
+
+    const [dataRes, summaryRes] = await Promise.all([
+        dataReq
+            .input('search',     sql.NVarChar(200), searchVal)
+            .input('pushStatus', sql.NVarChar(20),  statusVal)
+            .input('offset',     sql.Int,           offset)
+            .input('limit',      sql.Int,           limit)
+            .query(dataQuery),
+        summaryReq.query(summaryQuery),
+    ]);
+
+    const records = dataRes.recordset;
+    const total   = records.length > 0 ? records[0].TotalCount : 0;
+    const summaryMap = { Pending: 0, Pushing: 0, Pushed: 0, Failed: 0 };
+    for (const row of summaryRes.recordset) summaryMap[row.PushStatus] = row.Count;
+
+    return {
+        data:       records.map(({ TotalCount, ...rest }) => rest),
+        total, page, limit,
+        totalPages: Math.ceil(total / limit),
+        summary:    summaryMap,
+        window,
+    };
+}
+
+/**
+ * Full sale return header + lines for the Salesforce payload.
+ *  - docEntries given → exactly those credit memos (date window / status / customer type ignored)
+ *  - otherwise        → memos in the date window; onlyPending limits to Pending/Failed
+ * Returns header rows, each with a `Lines` array.
+ */
+async function getSaleReturnData({ docEntries, fromDate, toDate, onlyPending = false } = {}) {
+    const keys = Array.isArray(docEntries)
+        ? [...new Set(docEntries.map(k => parseInt(k, 10)).filter(Number.isInteger))]
+        : null;
+    if (keys && keys.length === 0) return [];
+
+    // Stay well under SQL Server's 2100-parameter limit
+    const CHUNK = 1000;
+    if (keys && keys.length > CHUNK) {
+        const out = [];
+        for (let i = 0; i < keys.length; i += CHUNK) {
+            out.push(...await getSaleReturnData({ docEntries: keys.slice(i, i + CHUNK) }));
+        }
+        return out;
+    }
+
+    const pool   = await getPool();
+    const req    = pool.request();
+    const window = resolveSaleReturnWindow({ fromDate, toDate });
+
+    req.input('fromDate',    sql.NVarChar(10), window.fromDate)
+       .input('toDate',      sql.NVarChar(10), window.toDate)
+       .input('repush',      sql.Bit,          saleReturnRepushOnUpdate())
+       .input('onlyPending', sql.Bit,          !keys && onlyPending ? 1 : 0);
+
+    let filter;
+    if (keys) {
+        const placeholders = keys.map((k, i) => { req.input(`k${i}`, sql.Int, k); return `@k${i}`; }).join(',');
+        filter = `T1.DocEntry IN (${placeholders}) AND T1.CANCELED = 'N'`;
+    } else {
+        filter = `${SALE_RETURN_DATE_FILTER} AND ${saleReturnCustomerFilter(req)}`;
+    }
+
+    const query = `
+        SET NOCOUNT ON;
+
+        DROP TABLE IF EXISTS #SaleReturnHeader;
+
+        ------------------------------------------------------------
+        -- 1. REQUIRED CREDIT MEMOS
+        ------------------------------------------------------------
+        SELECT
+            T1.DocEntry, T1.DocNum, T1.DocDate, T1.CardCode, T1.CardName,
+            T1.DocTotal, T1.Comments, T1.ObjType
+        INTO #SaleReturnHeader
+        ${SALE_RETURN_BASE_FROM}
+        WHERE ${filter}
+          AND (@onlyPending = 0 OR ST.PushStatus IN ('Pending', 'Failed'));
+
+        CREATE CLUSTERED INDEX IX_SaleReturnHeader_DocEntry ON #SaleReturnHeader (DocEntry);
+
+        ------------------------------------------------------------
+        -- 2. HEADERS
+        ------------------------------------------------------------
+        SELECT
+            LTRIM(RTRIM(T1.CardCode))                AS cardCode,
+            T1.CardName                              AS CardName,
+            ISNULL(DV.DivisionCode, '')              AS divisionCode,
+            CONVERT(VARCHAR(10), T1.DocDate, 23)     AS documentDate,
+            CAST(T1.DocTotal AS DECIMAL(18,2))       AS totalAmount,
+            ISNULL(T1.Comments, '')                  AS remarks,
+            T1.ObjType                               AS DocType,
+            CAST(T1.DocEntry AS INT)                 AS DocEntry,
+            CAST(T1.DocNum AS INT)                   AS DocNum
+        FROM #SaleReturnHeader T1
+        ${saleReturnDivisionApply('T1')}
+        ORDER BY T1.DocEntry;
+
+        ------------------------------------------------------------
+        -- 3. RIN1 LINES
+        ------------------------------------------------------------
+        SELECT
+            D.DocEntry,
+            D.ItemCode                                  AS Itemcode,
+            ISNULL(I.U_SubGrp3, '')                     AS CatalogName,
+            ISNULL(I.U_SubGrp6, '')                     AS ColorCode,
+            ISNULL(I.U_SubGrp5, '')                     AS Size,
+            ISNULL(I.U_SubGrp7, D.Dscription)           AS Style,
+            CAST(D.Quantity AS INT)                     AS Quantity,
+            CAST(D.Price AS DECIMAL(18,2))              AS Price,
+            CAST(ISNULL(D.VatSum, 0) AS DECIMAL(18,2))  AS TaxAmount
+        FROM [BBLive].[dbo].[RIN1] D WITH (NOLOCK)
+        INNER JOIN #SaleReturnHeader H ON H.DocEntry = D.DocEntry
+        LEFT JOIN [BBLive].[dbo].[OITM] I WITH (NOLOCK) ON I.ItemCode = D.ItemCode
+        ORDER BY D.DocEntry, D.LineNum;
+
+        DROP TABLE IF EXISTS #SaleReturnHeader;
+    `;
+
+    const result = await req.query(query);
+    const [headers = [], lines = []] = result.recordsets;
+
+    const linesByDoc = new Map();
+    for (const line of lines) {
+        if (!linesByDoc.has(line.DocEntry)) linesByDoc.set(line.DocEntry, []);
+        linesByDoc.get(line.DocEntry).push(line);
+    }
+    for (const h of headers) h.Lines = linesByDoc.get(h.DocEntry) || [];
+    return headers;
+}
+
 module.exports = {
     getProductData,
     getProductsPaged,
@@ -2819,7 +3092,7 @@ module.exports = {
     getProductDataByCodes,
     getPriceListRowsPaged,
     getPriceListStates,
-    getNextPendingProductTrigger,
+    getPendingProductTriggers,
     markProductTriggerSynced,
     getPriceListData,
     getPriceListsPaged,
@@ -2842,6 +3115,9 @@ module.exports = {
     resolveInvoiceWindow,
     getInvoicesPaged,
     getInvoiceData,
+    resolveSaleReturnWindow,
+    getSaleReturnsPaged,
+    getSaleReturnData,
     insertPunchLog,
     updatePunchLogStatus,
     getPendingPunchLogs,
