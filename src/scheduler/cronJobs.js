@@ -1015,8 +1015,8 @@ function startCronJobs() {
     {
         log.info('Sale Return API Sync not scheduled (SF_SALERETURN_SYNC_CRON is not set) — manual trigger only.');
     }
-    
-    scheduleDaily(0, 30, 'Product API Sync (12:30 AM IST)',
+
+    scheduleCron('0 */5 * * *', 'Product API Sync (every 5 hours)',
         async () => { await runProductApiSync(); }
     );
 
